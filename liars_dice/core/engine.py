@@ -1,17 +1,16 @@
 import random
 from typing import Dict
-from dataclasses import replace
 
 from .config import GameConfig
 from .state import PlayerState, PublicState, GameState
 from .dice import roll_n
 from .actions import BidAction, CallLiarAction, Action
-from .bid import Bid
 from .rules import count_matches
 
 
 class IllegalMoveError(Exception):
     pass
+
 
 class GameEngine:
     def __init__(self, config: GameConfig):
@@ -27,6 +26,12 @@ class GameEngine:
     # Events are simple dicts for now
     def _emit(self, event: Dict):
         self._events.append(event)
+
+    def pop_events(self):
+        """Return and clear emitted events."""
+        ev = list(self._events)
+        self._events.clear()
+        return ev
 
     def start_new_round(self) -> None:
         # roll dice for each player
@@ -51,6 +56,7 @@ class GameEngine:
             "player_id": player_id,
             "public": self.state.public,
             "my_dice": tuple(p.private_dice),
+            "config": self.config,
         }
 
     def apply_action(self, player_id: int, action: Action) -> None:
@@ -104,4 +110,3 @@ class GameEngine:
 
     def get_events(self):
         return list(self._events)
-
