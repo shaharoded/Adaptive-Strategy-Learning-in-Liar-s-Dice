@@ -128,7 +128,6 @@ def main():
     results_output_dir = "../results" # output directory
 
 
-
     if agent_1 not in AGENT_MAP or agent_2 not in AGENT_MAP:
         raise SystemExit(f"Unknown agent. Supported: {list(AGENT_MAP.keys())}")
 
