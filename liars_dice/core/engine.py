@@ -17,11 +17,24 @@ class GameEngine:
         self.config = config
         rng_seed = config.rng_seed
         self.rng = random.Random(rng_seed)
-        p0 = PlayerState(player_id=0, num_dice=config.dice_distribution[0])
-        p1 = PlayerState(player_id=1, num_dice=config.dice_distribution[1])
+        # Determine per-player dice distribution: prefer explicit dice_distribution, otherwise use total_dice per player
+        if getattr(config, "dice_distribution", None):
+            dist = tuple(config.dice_distribution)
+        else:
+            # interpret total_dice as per-player count
+            dist = tuple(config.total_dice for _ in range(config.num_players))
+        # Ensure we have enough entries for the configured number of players
+        if len(dist) < config.num_players:
+            dist = tuple(dist[i % len(dist)] for i in range(config.num_players))
+
+        # For now the state expects exactly two players; create player states using distribution
+        p0 = PlayerState(player_id=0, num_dice=dist[0])
+        p1 = PlayerState(player_id=1, num_dice=dist[1])
         public = PublicState()
         self.state = GameState(config=config, players=(p0, p1), public=public)
         self._events = []
+        # turn_log will contain per-turn snapshots that can be serialized to JSON
+        self.turn_log = []
 
     # Events are simple dicts for now
     def _emit(self, event: Dict):
@@ -32,6 +45,44 @@ class GameEngine:
         ev = list(self._events)
         self._events.clear()
         return ev
+
+    def _snapshot(self, actor: int = None, action: Dict = None):
+        """Create a snapshot of the current state suitable for JSON serialization.
+        If actor/action are provided, include them as the move that produced this state.
+        """
+        # shallow-copy players' public-facing fields and private dice
+        players_snapshot = []
+        for p in self.state.players:
+            players_snapshot.append({
+                "player_id": p.player_id,
+                "num_dice": p.num_dice,
+                "private_dice": list(p.private_dice),
+                "agent_id": p.agent_id,
+            })
+
+        last_bid = self.state.public.last_bid
+        last_bid_ser = None if last_bid is None else (last_bid.quantity, last_bid.face)
+        bid_history_ser = [ (b.quantity, b.face) for b in self.state.public.bid_history ]
+
+        public_snapshot = {
+            "round_index": self.state.public.round_index,
+            "turn_index": self.state.public.turn_index,
+            "current_player": self.state.public.current_player,
+            "last_bid": last_bid_ser,
+            "bid_history": bid_history_ser,
+            "status": self.state.public.status,
+            "winner": self.state.public.winner,
+            "loser": self.state.public.loser,
+        }
+
+        snap = {
+            "actor": actor,
+            "action": action,
+            "public": public_snapshot,
+            "players": players_snapshot,
+        }
+        self.turn_log.append(snap)
+        return snap
 
     def start_new_round(self) -> None:
         # roll dice for each player
@@ -48,6 +99,8 @@ class GameEngine:
         self.state.public.loser = None
         self._emit({"type": "RoundStarted", "round": self.state.public.round_index})
         self._emit({"type": "DiceRolled", "player0": p0.private_dice.copy(), "player1": p1.private_dice.copy()})
+        # snapshot initial state of the round (no actor/action)
+        self._snapshot(actor=None, action=None)
 
     def get_view(self, player_id: int):
         # Return a simple view: public + private dice for player
@@ -65,6 +118,9 @@ class GameEngine:
         if player_id != self.state.public.current_player:
             raise IllegalMoveError("Not player's turn")
 
+        # We'll serialize the action for logging after it's applied
+        action_ser = None
+
         if isinstance(action, BidAction):
             bid = action.bid
             bid.validate(self.config)
@@ -75,13 +131,18 @@ class GameEngine:
             self.state.public.turn_index += 1
             self.state.public.current_player = 1 - self.state.public.current_player
             self._emit({"type": "BidPlaced", "player": player_id, "bid": (bid.quantity, bid.face)})
+            action_ser = {"type": "Bid", "bid": (bid.quantity, bid.face)}
 
         elif isinstance(action, CallLiarAction):
             # resolve immediately
             self._emit({"type": "LiarCalled", "caller": player_id, "last_bid": self.state.public.last_bid})
+            action_ser = {"type": "CallLiar"}
             self._resolve_call(caller_id=player_id)
         else:
             raise IllegalMoveError("Unknown action")
+
+        # snapshot resulting state and the action that produced it
+        self._snapshot(actor=player_id, action=action_ser)
 
     def _resolve_call(self, caller_id: int) -> None:
         # reveal dice and determine winner/loser

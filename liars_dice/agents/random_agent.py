@@ -16,9 +16,12 @@ class RandomAgent(Agent):
         if public is not None:
             last = public.last_bid
 
-        # Try to get total_dice from an attached config if present; otherwise fallback to common default
+        # Determine total dice in game: prefer dice_distribution sum, otherwise interpret total_dice as per-player and multiply
         config = view.get("config") if hasattr(view, "get") else None
-        estimated_total = getattr(config, "total_dice", None) or 5
+        if config is not None and getattr(config, "dice_distribution", None):
+            estimated_total = sum(config.dice_distribution)
+        else:
+            estimated_total = getattr(config, "total_dice", 5) * getattr(config, "num_players", 1)
         max_qty = estimated_total
 
         # helper: count how many of a face we have in our private dice

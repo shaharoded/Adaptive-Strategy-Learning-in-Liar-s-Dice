@@ -93,6 +93,7 @@ def run_game(agent0_cls, agent1_cls, cfg: GameConfig, game_index: int) -> Dict[s
         "config": cfg.__dict__,
         "final_public": engine.state.public.__dict__,
         "players": [p.__dict__ for p in engine.state.players],
+        "turn_log": engine.turn_log,
         "events": game_events,
         "error": error,
         "end_reason": end_reason,
