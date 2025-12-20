@@ -2,7 +2,7 @@
 
 This repository will contain a **headless (no UI)** Liar’s Dice engine designed for:
 - **2 players (agents)**.
-- **5 total dice per round** (distributed across players).
+- **10 total dice per round** (distributed across players).
 - Clean separation between **game logic**, **agents**, **UI**, and **persistence**.
 - Full **turn-by-turn recording** to support later DB storage and replay.
 

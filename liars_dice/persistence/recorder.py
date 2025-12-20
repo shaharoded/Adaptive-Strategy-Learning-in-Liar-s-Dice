@@ -1,12 +1,12 @@
-from typing import List, Dict
+from typing import List
 from .events import GameEvent
 
 
 class InMemoryRecorder:
     def __init__(self):
-        self._events: List[Dict] = []
+        self._events: List[GameEvent] = []
 
-    def record(self, event: Dict) -> None:
+    def record(self, event: GameEvent) -> None:
         self._events.append(event)
 
     def events(self):
