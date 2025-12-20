@@ -7,15 +7,9 @@ from liars_dice.core.config import GameConfig
 from liars_dice.core.engine import GameEngine, IllegalMoveError
 from liars_dice.persistence import serializer
 
-# agent implementations available
-from liars_dice.agents.random_agent import RandomAgent
 
-AGENT_MAP = {
-    "random": RandomAgent,
-}
-"""
-Maps agent names (str) to their implementation classes. Add new agents here to make them available for experiments.
-"""
+# Import the central agent registry
+from liars_dice.agents import AGENT_MAP
 
 
 def run_game(agent0_cls, agent1_cls, cfg: GameConfig, game_index: int) -> Dict[str, Any]:

@@ -1,9 +1,12 @@
 import random
+
 from .base import Agent
 from ..core.bid import Bid
 from ..core.actions import BidAction, CallLiarAction
+from . import register_agent
 
 
+@register_agent("random")
 class RandomAgent(Agent):
     def __init__(self, rng=None):
         self.rng = rng or random.Random()
