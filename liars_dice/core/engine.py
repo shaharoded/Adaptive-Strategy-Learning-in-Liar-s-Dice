@@ -1,3 +1,15 @@
+
+"""
+engine.py
+Implements the GameEngine class, which manages game state, applies actions, enforces rules, and emits events.
+Related modules:
+- config.py: GameConfig is used to configure the engine.
+- state.py: GameState, PlayerState, PublicState hold all game data.
+- actions.py: Actions are applied to update state.
+- bid.py: Bid validation and ordering.
+- rules.py: Helpers for counting dice matches and wild ones logic.
+"""
+
 import random
 from typing import Dict
 
@@ -9,11 +21,23 @@ from .rules import count_matches
 
 
 class IllegalMoveError(Exception):
+    """
+    Raised when an illegal action is attempted (invalid move, wrong turn, etc).
+    """
     pass
 
 
 class GameEngine:
+    """
+    Main state machine for Liar's Dice. Manages game state, applies actions, enforces legality, and emits events.
+    Interacts with agents via get_view and apply_action.
+    """
     def __init__(self, config: GameConfig):
+        """
+        Initialize a new game engine with the given configuration.
+        Args:
+            config (GameConfig): Game configuration.
+        """
         self.config = config
         rng_seed = config.rng_seed
         self.rng = random.Random(rng_seed)
@@ -38,17 +62,29 @@ class GameEngine:
 
     # Events are simple dicts for now
     def _emit(self, event: Dict):
+        """
+        Internal: Record an event (dict) for later retrieval.
+        """
         self._events.append(event)
 
     def pop_events(self):
-        """Return and clear emitted events."""
+        """
+        Return and clear all emitted events since last call.
+        Returns:
+            list[dict]: List of event dicts.
+        """
         ev = list(self._events)
         self._events.clear()
         return ev
 
     def _snapshot(self, actor: int = None, action: Dict = None):
-        """Create a snapshot of the current state suitable for JSON serialization.
-        If actor/action are provided, include them as the move that produced this state.
+        """
+        Internal: Create a snapshot of the current state for logging/replay.
+        Args:
+            actor (int|None): Player who made the action.
+            action (dict|None): Action that produced this state.
+        Returns:
+            dict: Snapshot of state.
         """
         # shallow-copy players' public-facing fields and private dice
         players_snapshot = []
@@ -85,7 +121,9 @@ class GameEngine:
         return snap
 
     def start_new_round(self) -> None:
-        # roll dice for each player
+        """
+        Start a new round: roll dice, reset public state, emit initial events.
+        """
         p0, p1 = self.state.players
         p0.private_dice = roll_n(p0.num_dice, self.rng)
         p1.private_dice = roll_n(p1.num_dice, self.rng)
@@ -103,7 +141,13 @@ class GameEngine:
         self._snapshot(actor=None, action=None)
 
     def get_view(self, player_id: int):
-        # Return a simple view: public + private dice for player
+        """
+        Get a player-specific view of the game state (public info + private dice).
+        Args:
+            player_id (int): Player index (0 or 1).
+        Returns:
+            dict: Player view for agent decision-making.
+        """
         p = self.state.players[player_id]
         return {
             "player_id": player_id,
@@ -113,6 +157,14 @@ class GameEngine:
         }
 
     def apply_action(self, player_id: int, action: Action) -> None:
+        """
+        Apply an action for the given player, updating state and emitting events.
+        Args:
+            player_id (int): Player index (0 or 1).
+            action (Action): The action to apply (BidAction or CallLiarAction).
+        Raises:
+            IllegalMoveError: If action is invalid or not player's turn.
+        """
         if self.state.public.status != "BIDDING":
             raise IllegalMoveError("Game is not in bidding state")
         if player_id != self.state.public.current_player:
@@ -124,7 +176,7 @@ class GameEngine:
         if isinstance(action, BidAction):
             bid = action.bid
             bid.validate(self.config)
-            if not bid.is_higher_than(self.state.public.last_bid, self.config):
+            if not bid.is_higher_than(self.state.public.last_bid):
                 raise IllegalMoveError("Bid is not higher than last bid")
             self.state.public.last_bid = bid
             self.state.public.bid_history.append(bid)
@@ -145,6 +197,13 @@ class GameEngine:
         self._snapshot(actor=player_id, action=action_ser)
 
     def _resolve_call(self, caller_id: int) -> None:
+        """
+        Internal: Resolve a CallLiarAction, reveal dice, determine winner/loser, emit events.
+        Args:
+            caller_id (int): Player who called liar.
+        Raises:
+            IllegalMoveError: If no bid to call.
+        """
         # reveal dice and determine winner/loser
         all_dice = {0: self.state.players[0].private_dice, 1: self.state.players[1].private_dice}
         last_bid = self.state.public.last_bid
@@ -167,7 +226,15 @@ class GameEngine:
         self._emit({"type": "RoundEnded", "winner": winner, "loser": loser, "match_count": match_count, "was_true": was_true})
 
     def is_terminal(self) -> bool:
+        """
+        Returns True if the game round has ended.
+        """
         return self.state.public.status == "ENDED"
 
     def get_events(self):
+        """
+        Return all events emitted so far (does not clear).
+        Returns:
+            list[dict]: List of event dicts.
+        """
         return list(self._events)

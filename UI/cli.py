@@ -9,23 +9,46 @@ from liars_dice.agents.random_agent import RandomAgent
 from liars_dice.agents.base import Agent
 
 
+
 class HumanAgent(Agent):
+    """
+    Placeholder agent for human input in CLI mode.
+    The choose_action method is not used; input is handled directly in the CLI loop.
+    """
     def __init__(self):
         pass
 
     def choose_action(self, view):
-        # This method shouldn't be used by the CLI; human input is read directly in the UI loop.
+        """
+        Not implemented. Human input is handled in the CLI loop, not via this method.
+        """
         raise NotImplementedError("HumanAgent.choose_action should not be called")
 
 
+
 def choose_agent(name: str) -> Agent:
+    """
+    Return an Agent instance by name.
+    Args:
+        name (str): Name of the agent (e.g., 'random').
+    Returns:
+        Agent: The corresponding agent instance.
+    Raises:
+        ValueError: If the agent name is unknown.
+    """
     name = name.lower()
     if name in ("random", "r"):
         return RandomAgent()
     raise ValueError(f"Unknown agent: {name}")
 
 
+
 def print_state(view):
+    """
+    Print the current public state and player's dice to the terminal.
+    Args:
+        view (dict): Player-specific view from engine.get_view().
+    """
     public = view["public"]
     my_dice = view["my_dice"]
     print("\n=== ROUND {round} ===".format(round=public.round_index))
@@ -39,8 +62,15 @@ def print_state(view):
     print(f"Turn index: {public.turn_index}")
 
 
+
 def prompt_action(view) -> Optional[Action]:
-    """Prompt the human player for an action. Returns an Action or None on invalid input."""
+    """
+    Prompt the human player for an action (Bid or Call Liar).
+    Args:
+        view (dict): Player-specific view from engine.get_view().
+    Returns:
+        Action or None: The chosen action, or None if input is invalid.
+    """
     public = view["public"]
     last = public.last_bid
     # Present options: Bid or Call Liar
@@ -72,7 +102,7 @@ def prompt_action(view) -> Optional[Action]:
                 print(f"Invalid bid: {e}")
                 continue
             # If last exists, ensure bid is higher
-            if last is not None and not bid.is_higher_than(last, view.get("config")):
+            if last is not None and not bid.is_higher_than(last):
                 print("Bid must be higher than the last bid.")
                 continue
             return BidAction(bid)
@@ -81,7 +111,13 @@ def prompt_action(view) -> Optional[Action]:
         return None
 
 
+
 def show_rules(config: GameConfig):
+    """
+    Print the current game rules and configuration to the terminal.
+    Args:
+        config (GameConfig): The game configuration.
+    """
     print("\n=== GAME RULES ===")
     print(f"Players: {config.num_players}")
     # display dice distribution if present
@@ -94,7 +130,14 @@ def show_rules(config: GameConfig):
     print(f"Bid ordering: {config.bid_ordering}")
 
 
+
 def play_against(agent_name: str = "random", config: Optional[GameConfig] = None):
+    """
+    Play a single round of Liar's Dice as a human (player 0) against an agent (player 1) in the CLI.
+    Args:
+        agent_name (str): Name of the agent to play against (default 'random').
+        config (GameConfig, optional): Game configuration. If None, uses default config.
+    """
     # Setup game: create config at runtime so rng_seed can be None (non-deterministic)
     if config is None:
         config = GameConfig(dice_distribution=(5, 5), rng_seed=None)

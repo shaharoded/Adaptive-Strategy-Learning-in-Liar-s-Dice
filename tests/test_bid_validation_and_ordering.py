@@ -33,10 +33,10 @@ class TestBidValidationAndOrdering(unittest.TestCase):
     def test_is_higher_than_none_and_comparisons(self):
         cfg = GameConfig()
         b = Bid(2, 3)
-        self.assertTrue(b.is_higher_than(None, cfg))
-        self.assertTrue(Bid(3, 1).is_higher_than(Bid(2, 6), cfg))
-        self.assertTrue(Bid(2, 4).is_higher_than(Bid(2, 3), cfg))
-        self.assertFalse(Bid(2, 3).is_higher_than(Bid(2, 3), cfg))
+        self.assertTrue(b.is_higher_than(None))
+        self.assertTrue(Bid(3, 1).is_higher_than(Bid(2, 6)))
+        self.assertTrue(Bid(2, 4).is_higher_than(Bid(2, 3)))
+        self.assertFalse(Bid(2, 3).is_higher_than(Bid(2, 3)))
 
 
 if __name__ == '__main__':

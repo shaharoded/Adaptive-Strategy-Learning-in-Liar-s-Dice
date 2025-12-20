@@ -59,7 +59,7 @@ You can use the engine in two main ways:
 #### A. Running from Python (Agent-vs-Agent / Self-Play)
 Use this mode to run automated matches between agents, collect data, or train AI models. This is ideal for research, self-play, and batch experiments.
 
-**Example: Two agents playing against each other**
+**Option 1: Two agents playing against each other (single game)**
 
 ```python
 from liars_dice.core.config import GameConfig
@@ -80,8 +80,18 @@ while not engine.is_terminal():
     engine.apply_action(current, action)
 ```
 
+**Option 2: Batch self-play experiments (multiple games, data collection)**
+
+You can run a batch of games and collect results using the provided experiment script (from the project's root):
+
+```powershell
+python -m scripts.run_experiments
+```
+
+Edit the configuration section at the top of scripts/run_experiments.py to set the number of games, agent types, and output directory. Results and statistics will be saved to the specified directory (default: ../results).
+
 **Purpose:**
-- Run self-play matches between any agents
+- Run self-play matches between any agents (single or batch)
 - Collect event/state data for analysis or training
 - Useful for developing/testing new agent strategies
 

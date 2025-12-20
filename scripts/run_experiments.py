@@ -13,9 +13,22 @@ from liars_dice.agents.random_agent import RandomAgent
 AGENT_MAP = {
     "random": RandomAgent,
 }
+"""
+Maps agent names (str) to their implementation classes. Add new agents here to make them available for experiments.
+"""
 
 
 def run_game(agent0_cls, agent1_cls, cfg: GameConfig, game_index: int) -> Dict[str, Any]:
+    """
+    Run a single game between two agent classes with the given configuration.
+    Args:
+        agent0_cls: Class of agent 0 (must implement choose_action(view)).
+        agent1_cls: Class of agent 1.
+        cfg (GameConfig): Game configuration.
+        game_index (int): Index of the game (for output naming).
+    Returns:
+        dict: Result dictionary with game data, events, stats, and errors if any.
+    """
     engine = GameEngine(cfg)
     # instantiate agents; give each a seeded RNG for reproducibility
     a0 = agent0_cls()
@@ -109,6 +122,14 @@ def run_game(agent0_cls, agent1_cls, cfg: GameConfig, game_index: int) -> Dict[s
 
 
 def save_game_result(result: Dict[str, Any], out_dir: str) -> str:
+    """
+    Save a single game's result dictionary to a JSON file in the output directory.
+    Args:
+        result (dict): The result dictionary from run_game().
+        out_dir (str): Output directory path.
+    Returns:
+        str: Path to the saved file.
+    """
     os.makedirs(out_dir, exist_ok=True)
     filename = f"game_{result['game_index']:04d}_{result['timestamp'].replace(':', '-')}.json"
     path = os.path.join(out_dir, filename)
@@ -118,6 +139,10 @@ def save_game_result(result: Dict[str, Any], out_dir: str) -> str:
     return path
 
 
+"""
+Run a batch of Liar's Dice games between two agents, save results, and print a summary.
+Edit the configuration section to change agents, number of games, or output directory.
+"""
 def main():
     #################################
     #        Configuration
@@ -125,8 +150,7 @@ def main():
     agent_1 = "random" # agent name
     agent_2 = "random" # agent name
     number_of_games = 10
-    results_output_dir = "../results" # output directory
-
+    results_output_dir = "results" # output directory
 
     if agent_1 not in AGENT_MAP or agent_2 not in AGENT_MAP:
         raise SystemExit(f"Unknown agent. Supported: {list(AGENT_MAP.keys())}")
