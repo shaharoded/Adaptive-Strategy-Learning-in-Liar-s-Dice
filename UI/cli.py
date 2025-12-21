@@ -1,12 +1,18 @@
 import sys
 from typing import Optional
 
+
 from liars_dice.core.config import GameConfig
 from liars_dice.core.engine import GameEngine, IllegalMoveError
 from liars_dice.core.actions import BidAction, CallLiarAction, Action
 from liars_dice.core.bid import Bid
 from liars_dice.agents.random_agent import RandomAgent
 from liars_dice.agents.base import Agent
+from liars_dice.persistence.recorder import InMemoryRecorder
+from liars_dice.persistence.events import GameEvent
+from liars_dice.persistence.serializer import dumps
+import os
+import datetime
 
 
 
@@ -144,7 +150,26 @@ def play_against(agent_name: str = "random", config: Optional[GameConfig] = None
     engine = GameEngine(config)
     agent = choose_agent(agent_name)
 
+    # Attach in-memory recorder
+    recorder = InMemoryRecorder()
+    game_id = f"cli_{datetime.datetime.utcnow().strftime('%Y%m%dT%H%M%S')}_{os.getpid()}"
+
+    # Patch engine to record events as GameEvent
+    def record_event(event_type, payload, player_type=None):
+        event = GameEvent(
+            game_id=game_id,
+            event_type=event_type,
+            payload=payload,
+            player_type=player_type
+        )
+        recorder.record(event)
+
+    # Start round and record initial events
     engine.start_new_round()
+    record_event("RoundStarted", {"round": engine.state.public.round_index})
+    p0, p1 = engine.state.players
+    record_event("DiceRolled", {"player0": p0.private_dice.copy(), "player1": p1.private_dice.copy()}, player_type=None)
+
     # Let human be player 0 and agent be player 1
     human_id = 0
     agent_id = 1
@@ -160,6 +185,11 @@ def play_against(agent_name: str = "random", config: Optional[GameConfig] = None
                 action = prompt_action(view)
             try:
                 engine.apply_action(human_id, action)
+                # Record human action
+                if isinstance(action, BidAction):
+                    record_event("BidPlaced", {"player": human_id, "bid": (action.bid.quantity, action.bid.face)}, player_type="Human")
+                elif isinstance(action, CallLiarAction):
+                    record_event("LiarCalled", {"caller": human_id, "last_bid": engine.state.public.last_bid}, player_type="Human")
             except IllegalMoveError as e:
                 print(f"Illegal move: {e}")
                 continue
@@ -170,10 +200,16 @@ def play_against(agent_name: str = "random", config: Optional[GameConfig] = None
             print(f"Agent action: {type(action).__name__}")
             try:
                 engine.apply_action(agent_id, action)
+                # Record agent action
+                if isinstance(action, BidAction):
+                    record_event("BidPlaced", {"player": agent_id, "bid": (action.bid.quantity, action.bid.face)}, player_type=type(agent).__name__)
+                elif isinstance(action, CallLiarAction):
+                    record_event("LiarCalled", {"caller": agent_id, "last_bid": engine.state.public.last_bid}, player_type=type(agent).__name__)
             except IllegalMoveError as e:
                 # If agent made illegal move, treat as pass/call liar
                 print(f"Agent made illegal move: {e}. Agent will call liar instead.")
                 engine.apply_action(agent_id, CallLiarAction())
+                record_event("LiarCalled", {"caller": agent_id, "last_bid": engine.state.public.last_bid}, player_type=type(agent).__name__)
 
     # Round ended; show results
     public = engine.state.public
@@ -185,6 +221,18 @@ def play_against(agent_name: str = "random", config: Optional[GameConfig] = None
     p0, p1 = engine.state.players
     print(f"Player 0 dice: {p0.private_dice}")
     print(f"Player 1 dice: {p1.private_dice}")
+
+    # Record round end and dice reveal
+    record_event("DiceRevealed", {"all_dice": {0: p0.private_dice, 1: p1.private_dice}}, player_type=None)
+    record_event("RoundEnded", {"winner": public.winner, "loser": public.loser, "match_count": None, "was_true": None}, player_type=None)
+
+    # Save events to file in the 'results' directory
+    out_dir = "results"
+    os.makedirs(out_dir, exist_ok=True)
+    out_path = os.path.join(out_dir, f"game_{game_id}.json")
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write(dumps([e.__dict__ for e in recorder.events()]))
+    print(f"\n[Game events saved to {out_path}]")
 
 
 if __name__ == "__main__":

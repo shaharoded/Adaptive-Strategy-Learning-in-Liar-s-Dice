@@ -17,8 +17,10 @@ class GameEvent:
         game_id (str): Unique game identifier.
         event_type (str): Type of event (e.g., 'BidPlaced').
         payload (dict): Event-specific data.
+        player_type (str|None): Agent class name or 'Human' for the player who took the action (optional, for moves/actions).
     """
     game_id: str
     event_type: str
     payload: Dict[str, Any]
+    player_type: str = None
 

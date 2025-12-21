@@ -269,16 +269,19 @@ All events share:
 - `timestamp_utc: str` (or injected clock)
 - `event_type: str`
 - `payload: dict`
+- `player_type: str | None` — agent class name or 'Human' for the player who took the action (optional, always present for moves/actions; may be None for system events)
 
 Concrete events:
 - `GameCreatedEvent(config=...)`
 - `RoundStartedEvent(dice_distribution=...)`
-- `DiceRolledEvent(player_id, dice=[...], seed_info=...)`
-- `BidPlacedEvent(player_id, bid={quantity,face})`
-- `LiarCalledEvent(player_id=caller_id)`
+- `DiceRolledEvent(player_id, dice=[...], seed_info=..., player_type=...)`
+- `BidPlacedEvent(player_id, bid={quantity,face}, player_type=...)`
+- `LiarCalledEvent(player_id=caller_id, player_type=...)`
 - `DiceRevealedEvent(all_dice={player0:[...], player1:[...]})`
 - `RoundEndedEvent(winner_id, loser_id, last_bid, match_count, was_true)`
 - (Optional) `InvalidActionEvent(...)` (generally better as exception, not event)
+
+> **Note:** `player_type` is always included for any event representing a player action (bid, call, roll, etc.), and records the agent class or 'Human'. This enables downstream analysis and model training that conditions on or infers player strategy.
 
 ### Recorder interface
 `GameRecorder`:
@@ -364,4 +367,35 @@ After you approve this plan, the next deliverable will be the initial implementa
 - event recorder
 - minimal agent interface
 - deterministic tests
+
+## Data Collection & Model Training Plan
+
+### Data Recording
+
+- Every game produces a canonical event stream (`GameEvent`s) capturing all actions, dice rolls, and outcomes.
+- Each event includes: player ID, action type, bid/call details, dice values, round/turn index, and timestamp.
+- The winner/loser is recorded at the end of each round.
+- The event log is sufficient to reconstruct the full game state and each player’s observations at every turn.
+- **Player type (agent class or 'Human') is now recorded with each move/action event.**
+
+### Data Extraction for ML
+
+- For RL/IL/SL, extract (state, action, reward, next_state, done) tuples from the event stream.
+- The “state” for each agent is the public state plus their private dice at their turn.
+- The “action” is the move taken (bid or call).
+- The “reward” is determined at round end (win/loss).
+- **Player type is included for each action, enabling training of models that condition on or infer opponent strategy.**
+
+### Storage & Scalability
+
+- For large-scale experiments, store event logs in a database (SQL, NoSQL, or columnar formats like Parquet).
+- This enables efficient querying, aggregation, and batch extraction for model training.
+- Plan to implement a DB adapter (e.g., SQLRecorder) in the persistence layer.
+
+### Next Steps
+
+- Update all event creation to include the player type (agent class or 'Human') for each move/action event.
+- Implement data extraction scripts to convert event logs to ML-ready datasets, including player type.
+- Add a DB-backed recorder for scalable storage.
+- Document the schema and extraction process for reproducibility.
 
