@@ -6,13 +6,14 @@ from liars_dice.core.config import GameConfig
 from liars_dice.core.engine import GameEngine, IllegalMoveError
 from liars_dice.core.actions import BidAction, CallLiarAction, Action
 from liars_dice.core.bid import Bid
+from liars_dice.core.reward import get_reward
 from liars_dice.agents.base import Agent
 from liars_dice.agents import AGENT_MAP
-from liars_dice.persistence.recorder import InMemoryRecorder
-from liars_dice.persistence.events import GameEvent
-from liars_dice.persistence.serializer import dumps
+from liars_dice.persistence import csv_io
+
 import os
 import datetime
+import hashlib
 
 class HumanAgent(Agent):
     """
@@ -148,25 +149,36 @@ def play_against(agent_name: str = "random", config: Optional[GameConfig] = None
     engine = GameEngine(config)
     agent = choose_agent(agent_name)
 
-    # Attach in-memory recorder
-    recorder = InMemoryRecorder()
-    game_id = f"cli_{datetime.datetime.utcnow().strftime('%Y%m%dT%H%M%S')}_{os.getpid()}"
-
-    # Patch engine to record events as GameEvent
-    def record_event(event_type, payload, player_type=None):
-        event = GameEvent(
-            game_id=game_id,
-            event_type=event_type,
-            payload=payload,
-            player_type=player_type
-        )
-        recorder.record(event)
+    # Generate a hashed game_id for consistency with experiment script
+    timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    raw_id = f"cli_{timestamp}_{os.getpid()}_{agent_name}"
+    game_id = hashlib.sha256(raw_id.encode()).hexdigest()[:16]
+    data_dir = "data"
+    os.makedirs(data_dir, exist_ok=True)
+    trajectory_csv = os.path.join(data_dir, "game_trajectory.csv")
+    trajectory_header = csv_io.get_trajectory_header()
+    timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    trajectory_rows = []
+    def record_event(event_type, payload, player_type=None, turn_index=None, player=None, state=None, action=None, reward_val=None):
+        r = reward_val if reward_val is not None else get_reward(event_type, state, action, player, engine.state.public)
+        trajectory_rows.append({
+            "game_id": game_id,
+            "event_type": event_type,
+            "turn_index": turn_index if turn_index is not None else engine.state.public.turn_index,
+            "player": player,
+            "player_type": player_type,
+            "payload": str(payload),
+            "timestamp": timestamp,
+            "state": str(state) if state is not None else "",
+            "action": str(action) if action is not None else "",
+            "reward": r,
+        })
 
     # Start round and record initial events
     engine.start_new_round()
-    record_event("RoundStarted", {"round": engine.state.public.round_index})
+    record_event("RoundStarted", {"round": engine.state.public.round_index}, player_type=None, turn_index=engine.state.public.turn_index, player=None, state=engine.get_view(0), action=None, reward_val=0)
     p0, p1 = engine.state.players
-    record_event("DiceRolled", {"player0": p0.private_dice.copy(), "player1": p1.private_dice.copy()}, player_type=None)
+    record_event("DiceRolled", {"player0": p0.private_dice.copy(), "player1": p1.private_dice.copy()}, player_type=None, turn_index=engine.state.public.turn_index, player=None, state=engine.get_view(0), action=None, reward_val=0)
 
     # Let human be player 0 and agent be player 1
     human_id = 0
@@ -185,9 +197,9 @@ def play_against(agent_name: str = "random", config: Optional[GameConfig] = None
                 engine.apply_action(human_id, action)
                 # Record human action
                 if isinstance(action, BidAction):
-                    record_event("BidPlaced", {"player": human_id, "bid": (action.bid.quantity, action.bid.face)}, player_type="Human")
+                    record_event("BidPlaced", {"player": human_id, "bid": (action.bid.quantity, action.bid.face)}, player_type="Human", turn_index=engine.state.public.turn_index, player=human_id, state=view, action=action, reward_val=0)
                 elif isinstance(action, CallLiarAction):
-                    record_event("LiarCalled", {"caller": human_id, "last_bid": engine.state.public.last_bid}, player_type="Human")
+                    record_event("LiarCalled", {"caller": human_id, "last_bid": engine.state.public.last_bid}, player_type="Human", turn_index=engine.state.public.turn_index, player=human_id, state=view, action=action, reward_val=0)
             except IllegalMoveError as e:
                 print(f"Illegal move: {e}")
                 continue
@@ -200,14 +212,14 @@ def play_against(agent_name: str = "random", config: Optional[GameConfig] = None
                 engine.apply_action(agent_id, action)
                 # Record agent action
                 if isinstance(action, BidAction):
-                    record_event("BidPlaced", {"player": agent_id, "bid": (action.bid.quantity, action.bid.face)}, player_type=type(agent).__name__)
+                    record_event("BidPlaced", {"player": agent_id, "bid": (action.bid.quantity, action.bid.face)}, player_type=type(agent).__name__, turn_index=engine.state.public.turn_index, player=agent_id, state=view, action=action, reward_val=0)
                 elif isinstance(action, CallLiarAction):
-                    record_event("LiarCalled", {"caller": agent_id, "last_bid": engine.state.public.last_bid}, player_type=type(agent).__name__)
+                    record_event("LiarCalled", {"caller": agent_id, "last_bid": engine.state.public.last_bid}, player_type=type(agent).__name__, turn_index=engine.state.public.turn_index, player=agent_id, state=view, action=action, reward_val=0)
             except IllegalMoveError as e:
                 # If agent made illegal move, treat as pass/call liar
                 print(f"Agent made illegal move: {e}. Agent will call liar instead.")
                 engine.apply_action(agent_id, CallLiarAction())
-                record_event("LiarCalled", {"caller": agent_id, "last_bid": engine.state.public.last_bid}, player_type=type(agent).__name__)
+                record_event("LiarCalled", {"caller": agent_id, "last_bid": engine.state.public.last_bid}, player_type=type(agent).__name__, turn_index=engine.state.public.turn_index, player=agent_id, state=view, action="CallLiarAction", reward_val=0)
 
     # Round ended; show results
     public = engine.state.public
@@ -221,16 +233,45 @@ def play_against(agent_name: str = "random", config: Optional[GameConfig] = None
     print(f"Player 1 dice: {p1.private_dice}")
 
     # Record round end and dice reveal
-    record_event("DiceRevealed", {"all_dice": {0: p0.private_dice, 1: p1.private_dice}}, player_type=None)
-    record_event("RoundEnded", {"winner": public.winner, "loser": public.loser, "match_count": None, "was_true": None}, player_type=None)
+    record_event("DiceRevealed", {"all_dice": {0: p0.private_dice, 1: p1.private_dice}}, player_type=None, turn_index=engine.state.public.turn_index, player=None, state=engine.get_view(0), action=None, reward_val=0)
+    public = engine.state.public
+    # Assign reward at end of game using get_reward
+    final_state = engine.get_view(0)
+    final_action = None
+    final_reward = get_reward("RoundEnded", final_state, final_action, None, public)
+    record_event("RoundEnded", {"winner": public.winner, "loser": public.loser, "match_count": None, "was_true": None}, player_type=None, turn_index=engine.state.public.turn_index, player=None, state=final_state, action=final_action, reward_val=final_reward)
 
-    # Save events to file in the 'results' directory
-    out_dir = "results"
-    os.makedirs(out_dir, exist_ok=True)
-    out_path = os.path.join(out_dir, f"game_{game_id}.json")
-    with open(out_path, "w", encoding="utf-8") as f:
-        f.write(dumps([e.__dict__ for e in recorder.events()]))
-    print(f"\n[Game events saved to {out_path}]")
+    # Write trajectory rows to CSV using persistence API
+    csv_io.append_rows_to_csv(trajectory_rows, trajectory_csv, trajectory_header)
+    print(f"\n[Game events saved to {trajectory_csv}]")
+
+    # Write summary row to CSV using persistence API
+    summary_csv = os.path.join(data_dir, "game_summary.csv")
+    summary_header = csv_io.get_summary_header()
+    # Collect stats for summary row
+    steps = len([row for row in trajectory_rows if row["event_type"] in ("BidPlaced", "LiarCalled")])
+    bids = len([row for row in trajectory_rows if row["event_type"] == "BidPlaced"])
+    calls = len([row for row in trajectory_rows if row["event_type"] == "LiarCalled"])
+    bluffs_called = len([row for row in trajectory_rows if row["event_type"] == "RoundEnded" and ("was_true" in str(row["payload"])) and ("False" in str(row["payload"]))])
+    # Set end_reason to 'winner declared' if game ended normally
+    end_reason = "winner declared" if public.winner is not None else None
+    summary_row = {
+        "game_id": game_id,
+        "game_index": None,
+        "timestamp": timestamp,
+        "agent0": "Human",
+        "agent1": type(agent).__name__,
+        "winner": public.winner,
+        "loser": public.loser,
+        "steps": steps,
+        "bids": bids,
+        "calls": calls,
+        "bluffs_called": bluffs_called,
+        "error": None,
+        "end_reason": end_reason,
+    }
+    csv_io.append_row_to_csv(summary_row, summary_csv, summary_header)
+    print(f"[Game summary saved to {summary_csv}]")
 
 
 if __name__ == "__main__":

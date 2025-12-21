@@ -1,18 +1,24 @@
 import os
-import json
 import datetime
+import hashlib
 from typing import Any, Dict
+
+# Use persistence CSV utilities
+from liars_dice.persistence import csv_io
 
 from liars_dice.core.config import GameConfig
 from liars_dice.core.engine import GameEngine, IllegalMoveError
-from liars_dice.persistence import serializer
-
+from liars_dice.core.reward import get_reward
 
 # Import the central agent registry
 from liars_dice.agents import AGENT_MAP
 
 
-def run_game(agent0_cls, agent1_cls, cfg: GameConfig, game_index: int) -> Dict[str, Any]:
+def generate_game_id(agent0_cls, agent1_cls, timestamp):
+    raw = f"{timestamp}_{agent0_cls.__name__}_{agent1_cls.__name__}"
+    return hashlib.sha256(raw.encode()).hexdigest()[:16]
+
+def run_game(agent0_cls, agent1_cls, cfg: GameConfig, game_index: int, game_id: str, timestamp: str) -> Dict[str, Any]:
     """
     Run a single game between two agent classes with the given configuration.
     Args:
@@ -29,8 +35,6 @@ def run_game(agent0_cls, agent1_cls, cfg: GameConfig, game_index: int) -> Dict[s
     a1 = agent1_cls()
 
     engine.start_new_round()
-
-    game_events = []
     error = None
     # per-game counters for statistics
     steps = 0
@@ -40,12 +44,17 @@ def run_game(agent0_cls, agent1_cls, cfg: GameConfig, game_index: int) -> Dict[s
     end_reason = None
     # safety guard to avoid infinite games
     max_steps = getattr(cfg, 'max_turns', 1000)
+    trajectory_rows = []
     try:
         while not engine.is_terminal() and steps < max_steps:
             current = engine.state.public.current_player
             view = engine.get_view(current)
             agent = a0 if current == 0 else a1
             action = agent.choose_action(view)
+            # Serialize state and action for ML/RL
+            state_repr = str(view)
+            action_repr = str(action)
+            # Apply action
             engine.apply_action(current, action)
             steps += 1
             # capture incremental events and update stats
@@ -61,76 +70,112 @@ def run_game(agent0_cls, agent1_cls, cfg: GameConfig, game_index: int) -> Dict[s
                     was_true = ev.get("was_true")
                     if was_true is False:
                         bluffs_called += 1
-            game_events.extend(popped)
-
+                r = get_reward(t, view, action, current, engine.state.public)
+                trajectory_rows.append({
+                    "game_id": game_id,
+                    "event_type": t,
+                    "turn_index": engine.state.public.turn_index,
+                    "player": ev.get("player", current),
+                    "player_type": agent.__class__.__name__,
+                    "payload": str(ev.get("bid", ev)),
+                    "timestamp": timestamp,
+                    "state": state_repr,
+                    "action": action_repr,
+                    "reward": r,
+                })
     except IllegalMoveError as e:
         # expected illegal moves coming from GameEngine (bad action / turn / no bid to call)
         error = str(e)
         end_reason = "IllegalMoveError"
-        game_events.append({"type": "Error", "error": error, "kind": end_reason})
-        # mark ended (no valid winner in this case)
+        r = get_reward("Error", engine.get_view(current), "Error", current, engine.state.public)
+        trajectory_rows.append({
+            "game_id": game_id,
+            "event_type": "Error",
+            "turn_index": engine.state.public.turn_index,
+            "player": current,
+            "player_type": agent.__class__.__name__,
+            "payload": str(e),
+            "timestamp": timestamp,
+            "state": str(engine.get_view(current)),
+            "action": "Error",
+            "reward": r,
+        })
         engine.state.public.status = "ENDED"
     except Exception as e:
         # catch any unexpected exception, record traceback for debugging
         import traceback
-
         tb = traceback.format_exc()
         error = f"UnexpectedException: {e}"
         end_reason = "UnexpectedException"
-        game_events.append({"type": "Error", "error": error, "traceback": tb})
+        r = get_reward("Error", engine.get_view(current), "Error", current, engine.state.public)
+        trajectory_rows.append({
+            "game_id": game_id,
+            "event_type": "Error",
+            "turn_index": engine.state.public.turn_index,
+            "player": current,
+            "player_type": agent.__class__.__name__,
+            "payload": tb,
+            "timestamp": timestamp,
+            "state": str(engine.get_view(current)),
+            "action": "Error",
+            "reward": r,
+        })
         engine.state.public.status = "ENDED"
 
     # collect final events from engine (if any)
     final = engine.pop_events()
-    if final:
-        game_events.extend(final)
-
-    # if we exited because of reaching max_steps, mark it
+    for ev in final:
+        t = ev.get("type")
+        r = get_reward(t, engine.get_view(ev.get("player", 0)), "FinalEvent", ev.get("player", 0), engine.state.public)
+        trajectory_rows.append({
+            "game_id": game_id,
+            "event_type": t,
+            "turn_index": engine.state.public.turn_index,
+            "player": ev.get("player", None),
+            "player_type": None,
+            "payload": str(ev.get("bid", ev)),
+            "timestamp": timestamp,
+            "state": str(engine.get_view(ev.get("player", 0))),
+            "action": "FinalEvent",
+            "reward": r,
+        })
     if not engine.is_terminal() and steps >= max_steps:
         end_reason = end_reason or "max_steps_reached"
-        game_events.append({"type": "Error", "error": "max steps reached", "kind": end_reason})
+        trajectory_rows.append({
+            "game_id": game_id,
+            "event_type": "Error",
+            "turn_index": engine.state.public.turn_index,
+            "player": None,
+            "player_type": None,
+            "payload": "max steps reached",
+            "timestamp": timestamp,
+            "state": str(engine.get_view(0)),
+            "action": "Error",
+            "reward": get_reward("Error", engine.get_view(0), "Error", 0, engine.state.public),
+        })
         engine.state.public.status = "ENDED"
-
-    # Build a result dict
-    result = {
+    # If game ended normally (winner declared), set end_reason
+    if end_reason is None and engine.state.public.winner is not None:
+        end_reason = "winner declared"
+    summary_row = {
+        "game_id": game_id,
         "game_index": game_index,
-        "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "timestamp": timestamp,
         "agent0": agent0_cls.__name__,
         "agent1": agent1_cls.__name__,
-        "config": cfg.__dict__,
-        "final_public": engine.state.public.__dict__,
-        "players": [p.__dict__ for p in engine.state.players],
-        "turn_log": engine.turn_log,
-        "events": game_events,
+        "winner": engine.state.public.winner,
+        "loser": engine.state.public.loser,
+        "steps": steps,
+        "bids": bids,
+        "calls": calls,
+        "bluffs_called": bluffs_called,
         "error": error,
         "end_reason": end_reason,
-        "stats": {
-            "steps": steps,
-            "bids": bids,
-            "calls": calls,
-            "bluffs_called": bluffs_called,
-            "events_recorded": len(game_events),
-        },
     }
-    return result
+    return summary_row, trajectory_rows
 
 
-def save_game_result(result: Dict[str, Any], out_dir: str) -> str:
-    """
-    Save a single game's result dictionary to a JSON file in the output directory.
-    Args:
-        result (dict): The result dictionary from run_game().
-        out_dir (str): Output directory path.
-    Returns:
-        str: Path to the saved file.
-    """
-    os.makedirs(out_dir, exist_ok=True)
-    filename = f"game_{result['game_index']:04d}_{result['timestamp'].replace(':', '-')}.json"
-    path = os.path.join(out_dir, filename)
-    # use serializer.dumps to handle dataclasses
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(serializer.dumps(result))
-    return path
+
 
 
 """
@@ -144,67 +189,31 @@ def main():
     agent_1 = "random" # agent name
     agent_2 = "random" # agent name
     number_of_games = 10
-    results_output_dir = "results" # output directory
+    data_dir = "data"
+    os.makedirs(data_dir, exist_ok=True)
+    summary_csv = os.path.join(data_dir, "game_summary.csv")
+    trajectory_csv = os.path.join(data_dir, "game_trajectory.csv")
 
     if agent_1 not in AGENT_MAP or agent_2 not in AGENT_MAP:
         raise SystemExit(f"Unknown agent. Supported: {list(AGENT_MAP.keys())}")
 
     agent0_cls = AGENT_MAP[agent_1]
     agent1_cls = AGENT_MAP[agent_2]
-
     cfg = GameConfig()
 
-    # cumulative aggregation for averages
-    total_steps = 0
-    total_bids = 0
-    total_calls = 0
-    total_bluffs = 0
-
-    summary = {"total": number_of_games, "wins_agent0": 0, "wins_agent1": 0, "errors": 0, "files": [], "per_game_stats": []}
+    summary_header = csv_io.get_summary_header()
+    trajectory_header = csv_io.get_trajectory_header()
 
     for i in range(number_of_games):
+        timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        game_id = generate_game_id(agent0_cls, agent1_cls, f"{timestamp}_{i}")
         print(f"Running game {i+1}/{number_of_games}...", end=" ")
-        result = run_game(agent0_cls, agent1_cls, cfg, i)
-        path = save_game_result(result, results_output_dir)
-        summary["files"].append(path)
-        # record per-game stats in summary list
-        stats = result.get("stats", {})
-        summary["per_game_stats"].append({"game_index": i, **stats})
-        total_steps += stats.get("steps", 0)
-        total_bids += stats.get("bids", 0)
-        total_calls += stats.get("calls", 0)
-        total_bluffs += stats.get("bluffs_called", 0)
-        # determine winner from final_public
-        winner = result.get("final_public", {}).get("winner")
-        if winner is None:
-            if result.get("error"):
-                summary["errors"] += 1
-        else:
-            if winner == 0:
-                summary["wins_agent0"] += 1
-            elif winner == 1:
-                summary["wins_agent1"] += 1
-        print("done ->", os.path.basename(path))
+        summary_row, trajectory_rows = run_game(agent0_cls, agent1_cls, cfg, i, game_id, timestamp)
+        csv_io.append_row_to_csv(summary_row, summary_csv, summary_header)
+        csv_io.append_rows_to_csv(trajectory_rows, trajectory_csv, trajectory_header)
+        print("done")
 
-    # compute averages
-    if number_of_games > 0:
-        summary["avg_steps"] = total_steps / number_of_games
-        summary["avg_bids"] = total_bids / number_of_games
-        summary["avg_calls"] = total_calls / number_of_games
-        summary["avg_bluffs_called"] = total_bluffs / number_of_games
-    else:
-        summary["avg_steps"] = 0
-        summary["avg_bids"] = 0
-        summary["avg_calls"] = 0
-        summary["avg_bluffs_called"] = 0
-
-    # write summary
-    summary_path = os.path.join(results_output_dir, "summary.json")
-    with open(summary_path, "w", encoding="utf-8") as f:
-        f.write(json.dumps(summary, indent=2))
-
-    print("All games finished. Summary:")
-    print(json.dumps(summary, indent=2))
+    print(f"All games finished. Data saved to {data_dir}/game_summary.csv and {data_dir}/game_trajectory.csv")
 
 
 if __name__ == "__main__":

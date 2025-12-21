@@ -26,7 +26,7 @@ class GameConfig:
         rng_seed (int|None): Seed for deterministic games.
     """
     num_players: int = 2
-    total_dice: int = 10
+    total_dice: int = 5
     # if dice_distribution is None, engine will interpret total_dice as per-player dice count
     dice_distribution: Optional[Tuple[int, ...]] = None
     faces: Tuple[int, ...] = (1, 2, 3, 4, 5, 6)
