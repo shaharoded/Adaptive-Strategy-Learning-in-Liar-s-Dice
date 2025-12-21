@@ -6,15 +6,13 @@ from liars_dice.core.config import GameConfig
 from liars_dice.core.engine import GameEngine, IllegalMoveError
 from liars_dice.core.actions import BidAction, CallLiarAction, Action
 from liars_dice.core.bid import Bid
-from liars_dice.agents.random_agent import RandomAgent
 from liars_dice.agents.base import Agent
+from liars_dice.agents import AGENT_MAP
 from liars_dice.persistence.recorder import InMemoryRecorder
 from liars_dice.persistence.events import GameEvent
 from liars_dice.persistence.serializer import dumps
 import os
 import datetime
-
-
 
 class HumanAgent(Agent):
     """
@@ -43,8 +41,8 @@ def choose_agent(name: str) -> Agent:
         ValueError: If the agent name is unknown.
     """
     name = name.lower()
-    if name in ("random", "r"):
-        return RandomAgent()
+    if name in AGENT_MAP:
+        return AGENT_MAP[name]()
     raise ValueError(f"Unknown agent: {name}")
 
 

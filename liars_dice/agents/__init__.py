@@ -18,6 +18,14 @@ def register_agent(name):
 		return cls
 	return decorator
 
-# Import all agent modules here to ensure registration decorators run
-from . import random_agent
+# Automatically import all agent modules in this directory to ensure registration decorators run
+import importlib
+import os
+import pkgutil
+
+_this_dir = os.path.dirname(__file__)
+_pkg_name = __name__
+for _, modname, ispkg in pkgutil.iter_modules([_this_dir]):
+	if not ispkg and modname not in ("__init__", "base"):
+		importlib.import_module(f"{_pkg_name}.{modname}")
 
