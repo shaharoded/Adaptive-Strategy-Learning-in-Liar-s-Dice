@@ -1,4 +1,5 @@
-from liars_dice.agents.base import Agent, register_agent
+from . import register_agent
+from liars_dice.agents.base import Agent
 from liars_dice.core.actions import BidAction, CallLiarAction
 from liars_dice.core.bid import Bid
 import random

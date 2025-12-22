@@ -1,6 +1,10 @@
 from abc import ABC, abstractmethod
 from typing import Any
 
+# --- Approximate Nash/CFR Agent (stub) ---
+class UntrainedAgentException(Exception):
+    """Raised when a NashCFRAgent is used without a trained policy file present."""
+    pass
 
 class Agent(ABC):
     """

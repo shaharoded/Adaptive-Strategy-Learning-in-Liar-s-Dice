@@ -1,9 +1,9 @@
 import random
 
+from . import register_agent
 from .base import Agent
 from ..core.bid import Bid
 from ..core.actions import BidAction, CallLiarAction
-from . import register_agent
 
 
 @register_agent("random")
