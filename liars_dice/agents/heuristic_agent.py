@@ -208,7 +208,6 @@ class MaxRaiseAgent(RaisePreferenceAgent):
         super().__init__(prefer_maximal=True)
 
 
-
 @register_agent("mirror")
 class MirrorAgent(HeuristicAgent):
     """
@@ -261,3 +260,211 @@ class MaxCountBidAgent(HeuristicAgent):
             return BidAction(next_bid)
         except Exception:
             return CallLiarAction()
+
+
+# RandomFaceAgent: always bids the next legal bid with a random face
+@register_agent("randomface")
+class RandomFaceAgent(HeuristicAgent):
+    """
+    RandomFaceAgent:
+    - Always bids the next legal bid with a random face, regardless of the last bid’s face.
+    - Calls liar if no valid bid is possible.
+    """
+    def choose_action(self, view):
+        my_dice = self.get_my_dice(view)
+        last_bid = self.get_last_bid(view)
+        config = self.get_config(view)
+        faces = config.faces
+        total_dice = self.get_num_dice(view)
+        if last_bid is None:
+            return BidAction(Bid(1, random.choice(my_dice)))
+        candidates = []
+        for q in range(last_bid.quantity, total_dice + 1):
+            for f in faces:
+                candidate = Bid(q, f)
+                if candidate.is_higher_than(last_bid):
+                    try:
+                        candidate.validate(config)
+                        candidates.append(candidate)
+                    except Exception:
+                        continue
+        if not candidates:
+            return CallLiarAction()
+        return BidAction(random.choice(candidates))
+
+
+# SafeFaceAgent: prefers to bid faces it has in hand
+@register_agent("safeface")
+class SafeFaceAgent(HeuristicAgent):
+    """
+    SafeFaceAgent:
+    - Prefers to bid faces it has in hand, picking the minimal valid raise for those faces.
+    - If no such bid is possible, falls back to any minimal valid raise.
+    - Calls liar if no valid bid is possible.
+    """
+    def choose_action(self, view):
+        my_dice = self.get_my_dice(view)
+        last_bid = self.get_last_bid(view)
+        config = self.get_config(view)
+        faces = config.faces
+        total_dice = self.get_num_dice(view)
+        if last_bid is None:
+            # Pick the face in hand with highest count
+            from collections import Counter
+            counts = Counter(my_dice)
+            face, _ = counts.most_common(1)[0]
+            return BidAction(Bid(1, face))
+        # Prefer faces in hand
+        for q in range(last_bid.quantity, total_dice + 1):
+            for f in set(my_dice):
+                candidate = Bid(q, f)
+                if candidate.is_higher_than(last_bid):
+                    try:
+                        candidate.validate(config)
+                        return BidAction(candidate)
+                    except Exception:
+                        continue
+        # Fallback: any minimal valid raise
+        for q in range(last_bid.quantity, total_dice + 1):
+            for f in faces:
+                candidate = Bid(q, f)
+                if candidate.is_higher_than(last_bid):
+                    try:
+                        candidate.validate(config)
+                        return BidAction(candidate)
+                    except Exception:
+                        continue
+        return CallLiarAction()
+
+
+# OnesAreWildAgent: prefers to bid on ones if ones are wild
+@register_agent("onesarewild")
+class OnesAreWildAgent(HeuristicAgent):
+    """
+    OnesAreWildAgent:
+    - If ones are wild, prefers to bid on ones, otherwise acts like SafeFaceAgent.
+    - Calls liar if no valid bid is possible.
+    """
+    def choose_action(self, view):
+        my_dice = self.get_my_dice(view)
+        last_bid = self.get_last_bid(view)
+        config = self.get_config(view)
+        faces = config.faces
+        total_dice = self.get_num_dice(view)
+        ones_wild = getattr(config, 'ones_wild', False)
+        if last_bid is None:
+            if ones_wild:
+                return BidAction(Bid(1, 1))
+            else:
+                from collections import Counter
+                counts = Counter(my_dice)
+                face, _ = counts.most_common(1)[0]
+                return BidAction(Bid(1, face))
+        # Prefer ones if wild
+        if ones_wild:
+            for q in range(last_bid.quantity, total_dice + 1):
+                candidate = Bid(q, 1)
+                if candidate.is_higher_than(last_bid):
+                    try:
+                        candidate.validate(config)
+                        return BidAction(candidate)
+                    except Exception:
+                        continue
+        # Otherwise, fallback to SafeFaceAgent logic
+        for q in range(last_bid.quantity, total_dice + 1):
+            for f in set(my_dice):
+                candidate = Bid(q, f)
+                if candidate.is_higher_than(last_bid):
+                    try:
+                        candidate.validate(config)
+                        return BidAction(candidate)
+                    except Exception:
+                        continue
+        return CallLiarAction()
+
+
+# BluffingAgent: sometimes bids on faces not in hand
+@register_agent("bluffing")
+class BluffingAgent(HeuristicAgent):
+    """
+    BluffingAgent:
+    - With probability bluff_chance, bids on a face not in hand (if possible), otherwise acts like SafeFaceAgent.
+    - Calls liar if no valid bid is possible.
+    """
+    def __init__(self, bluff_chance=0.2):
+        super().__init__()
+        self.bluff_chance = bluff_chance
+
+    def choose_action(self, view):
+        my_dice = self.get_my_dice(view)
+        last_bid = self.get_last_bid(view)
+        config = self.get_config(view)
+        faces = config.faces
+        total_dice = self.get_num_dice(view)
+        not_in_hand = [f for f in faces if f not in my_dice]
+        if last_bid is None:
+            if not_in_hand and random.random() < self.bluff_chance:
+                return BidAction(Bid(1, random.choice(not_in_hand)))
+            else:
+                from collections import Counter
+                counts = Counter(my_dice)
+                face, _ = counts.most_common(1)[0]
+                return BidAction(Bid(1, face))
+        # Try bluff
+        if not_in_hand and random.random() < self.bluff_chance:
+            for q in range(last_bid.quantity, total_dice + 1):
+                for f in not_in_hand:
+                    candidate = Bid(q, f)
+                    if candidate.is_higher_than(last_bid):
+                        try:
+                            candidate.validate(config)
+                            return BidAction(candidate)
+                        except Exception:
+                            continue
+        # Otherwise, SafeFaceAgent logic
+        for q in range(last_bid.quantity, total_dice + 1):
+            for f in set(my_dice):
+                candidate = Bid(q, f)
+                if candidate.is_higher_than(last_bid):
+                    try:
+                        candidate.validate(config)
+                        return BidAction(candidate)
+                    except Exception:
+                        continue
+        return CallLiarAction()
+
+
+# ThresholdLiarAgent: calls liar if bid exceeds a threshold
+@register_agent("thresholdliar")
+class ThresholdLiarAgent(HeuristicAgent):
+    """
+    ThresholdLiarAgent:
+    - Calls liar if the last bid's quantity exceeds a threshold (default: half the total dice, rounded up).
+    - Otherwise, makes a minimal valid raise (by quantity or face).
+    """
+    def __init__(self, threshold=None):
+        super().__init__()
+        self.threshold = threshold
+
+    def choose_action(self, view):
+        my_dice = self.get_my_dice(view)
+        last_bid = self.get_last_bid(view)
+        config = self.get_config(view)
+        faces = config.faces
+        total_dice = self.get_num_dice(view)
+        threshold = self.threshold or ((total_dice + 1) // 2)
+        if last_bid is None:
+            return BidAction(Bid(1, random.choice(my_dice)))
+        if last_bid.quantity > threshold:
+            return CallLiarAction()
+        # Otherwise, minimal valid raise
+        for q in range(last_bid.quantity, total_dice + 1):
+            for f in faces:
+                candidate = Bid(q, f)
+                if candidate.is_higher_than(last_bid):
+                    try:
+                        candidate.validate(config)
+                        return BidAction(candidate)
+                    except Exception:
+                        continue
+        return CallLiarAction()
