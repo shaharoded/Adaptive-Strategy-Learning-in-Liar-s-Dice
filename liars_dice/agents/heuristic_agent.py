@@ -29,6 +29,33 @@ class HeuristicAgent(Agent):
 
     def get_num_dice(self, view):
         return sum(view["public"].dice_counts)
+    
+    def is_bid_possible(self, bid, my_dice, total_dice, ones_wild=False, faces=None):
+        """
+        Returns True if the bid is possible given my_dice and total_dice.
+        """
+        if bid.quantity > total_dice:
+            return False
+        # Count how many dice of the bid face (or ones if wild)
+        count = my_dice.count(bid.face)
+        if ones_wild and faces is not None and bid.face != 1:
+            count += my_dice.count(1)
+        # If I have 0 of that face (and ones if wild), it's still possible, but less likely
+        # Only impossible if quantity > total_dice
+        return bid.quantity <= total_dice
+
+    def is_last_bid_impossible(self, last_bid, my_dice, total_dice, ones_wild=False, faces=None):
+        if last_bid is None:
+            return False
+        # If the last bid requires more dice than possible, it's impossible
+        if last_bid.quantity > total_dice:
+            return True
+        # If I have 0 of the face (and ones if wild), and the bid quantity is more than total_dice - my_dice_count, it's impossible
+        count = my_dice.count(last_bid.face)
+        if ones_wild and faces is not None and last_bid.face != 1:
+            count += my_dice.count(1)
+        # If I have none, but the bid is for all dice, it's impossible
+        return last_bid.quantity > total_dice
 
 
 @register_agent("conservative")
@@ -47,8 +74,11 @@ class ConservativeAgent(HeuristicAgent):
         # If no bid, start with a low bid
         if last_bid is None:
             return BidAction(Bid(1, my_dice[0]))
-        # If last bid is high, call liar
-        if last_bid.quantity > len(my_dice):
+        total_dice = self.get_num_dice(view)
+        ones_wild = getattr(config, 'ones_wild', False)
+        faces = config.faces
+        # If last bid is impossible, call liar
+        if self.is_last_bid_impossible(last_bid, my_dice, total_dice, ones_wild, faces):
             return CallLiarAction()
         # Otherwise, suggest the smallest possible valid raise (by quantity or face)
         faces = config.faces
@@ -80,13 +110,17 @@ class AggressiveAgent(HeuristicAgent):
         # If no bid, start with a high bid
         if last_bid is None:
             return BidAction(Bid(len(my_dice), random.choice(my_dice)))
-        # Try all valid higher bids (by quantity or face), prefer higher quantities first
+        total_dice = self.get_num_dice(view)
+        ones_wild = getattr(config, 'ones_wild', False)
         faces = config.faces
-        max_qty = self.get_num_dice(view)
-        for q in range(max_qty, last_bid.quantity, -1):
+        # If last bid is impossible, call liar
+        if self.is_last_bid_impossible(last_bid, my_dice, total_dice, ones_wild, faces):
+            return CallLiarAction()
+        # Try all valid higher bids (by quantity or face), prefer higher quantities first, only possible bids
+        for q in range(total_dice, last_bid.quantity, -1):
             for f in faces:
                 candidate = Bid(q, f)
-                if candidate.is_higher_than(last_bid):
+                if candidate.is_higher_than(last_bid) and self.is_bid_possible(candidate, my_dice, total_dice, ones_wild, faces):
                     try:
                         candidate.validate(config)
                         return BidAction(candidate)
@@ -119,6 +153,10 @@ class ProbabilityAgent(HeuristicAgent):
         # If no bid, start with a likely bid
         if last_bid is None:
             return BidAction(Bid(1, random.choice(my_dice)))
+        ones_wild = getattr(config, 'ones_wild', False)
+        # If last bid is impossible, call liar
+        if self.is_last_bid_impossible(last_bid, my_dice, total_dice, ones_wild, faces):
+            return CallLiarAction()
         # Estimate probability last bid is true
         expected = total_dice / len(faces)
         # If bid is much higher than expected, call liar
@@ -129,7 +167,7 @@ class ProbabilityAgent(HeuristicAgent):
         for q in range(last_bid.quantity, total_dice + 1):
             for f in faces:
                 candidate = Bid(q, f)
-                if candidate.is_higher_than(last_bid):
+                if candidate.is_higher_than(last_bid) and self.is_bid_possible(candidate, my_dice, total_dice, ones_wild, faces):
                     try:
                         candidate.validate(config)
                         candidates.append(candidate)
@@ -176,12 +214,16 @@ class RaisePreferenceAgent(HeuristicAgent):
         # If no bid, start with a likely bid
         if last_bid is None:
             return BidAction(Bid(1, random.choice(my_dice)))
+        ones_wild = getattr(config, 'ones_wild', False)
+        # If last bid is impossible, call liar
+        if self.is_last_bid_impossible(last_bid, my_dice, total_dice, ones_wild, faces):
+            return CallLiarAction()
         # Generate all valid higher bids
         candidates = []
         for q in range(last_bid.quantity, total_dice + 1):
             for f in faces:
                 candidate = Bid(q, f)
-                if candidate.is_higher_than(last_bid):
+                if candidate.is_higher_than(last_bid) and self.is_bid_possible(candidate, my_dice, total_dice, ones_wild, faces):
                     try:
                         candidate.validate(config)
                         candidates.append(candidate)
@@ -224,15 +266,21 @@ class MirrorAgent(HeuristicAgent):
         # If no bid, start with a random bid
         if last_bid is None:
             return BidAction(Bid(1, random.choice(my_dice)))
+        total_dice = self.get_num_dice(view)
+        ones_wild = getattr(config, 'ones_wild', False)
+        faces = config.faces
+        # If last bid is impossible, call liar
+        if self.is_last_bid_impossible(last_bid, my_dice, total_dice, ones_wild, faces):
+            return CallLiarAction()
         # Mirror: only raise quantity for the same face as last bid
-        max_qty = self.get_num_dice(view)
-        for q in range(last_bid.quantity + 1, max_qty + 1):
+        for q in range(last_bid.quantity + 1, total_dice + 1):
             candidate = Bid(q, last_bid.face)
-            try:
-                candidate.validate(config)
-                return BidAction(candidate)
-            except Exception:
-                continue
+            if self.is_bid_possible(candidate, my_dice, total_dice, ones_wild, faces):
+                try:
+                    candidate.validate(config)
+                    return BidAction(candidate)
+                except Exception:
+                    continue
         return CallLiarAction()
         
 
@@ -253,13 +301,21 @@ class MaxCountBidAgent(HeuristicAgent):
             counts = Counter(my_dice)
             face, qty = counts.most_common(1)[0]
             return BidAction(Bid(qty, face))
+        total_dice = self.get_num_dice(view)
+        ones_wild = getattr(config, 'ones_wild', False)
+        faces = config.faces
+        # If last bid is impossible, call liar
+        if self.is_last_bid_impossible(last_bid, my_dice, total_dice, ones_wild, faces):
+            return CallLiarAction()
         # Otherwise, bid up minimally
         try:
             next_bid = Bid(last_bid.quantity + 1, last_bid.face)
-            next_bid.validate(config)
-            return BidAction(next_bid)
+            if self.is_bid_possible(next_bid, my_dice, total_dice, ones_wild, faces):
+                next_bid.validate(config)
+                return BidAction(next_bid)
         except Exception:
-            return CallLiarAction()
+            pass
+        return CallLiarAction()
 
 
 # RandomFaceAgent: always bids the next legal bid with a random face
@@ -278,11 +334,15 @@ class RandomFaceAgent(HeuristicAgent):
         total_dice = self.get_num_dice(view)
         if last_bid is None:
             return BidAction(Bid(1, random.choice(my_dice)))
+        ones_wild = getattr(config, 'ones_wild', False)
+        # If last bid is impossible, call liar
+        if self.is_last_bid_impossible(last_bid, my_dice, total_dice, ones_wild, faces):
+            return CallLiarAction()
         candidates = []
         for q in range(last_bid.quantity, total_dice + 1):
             for f in faces:
                 candidate = Bid(q, f)
-                if candidate.is_higher_than(last_bid):
+                if candidate.is_higher_than(last_bid) and self.is_bid_possible(candidate, my_dice, total_dice, ones_wild, faces):
                     try:
                         candidate.validate(config)
                         candidates.append(candidate)
@@ -314,11 +374,15 @@ class SafeFaceAgent(HeuristicAgent):
             counts = Counter(my_dice)
             face, _ = counts.most_common(1)[0]
             return BidAction(Bid(1, face))
+        ones_wild = getattr(config, 'ones_wild', False)
+        # If last bid is impossible, call liar
+        if self.is_last_bid_impossible(last_bid, my_dice, total_dice, ones_wild, faces):
+            return CallLiarAction()
         # Prefer faces in hand
         for q in range(last_bid.quantity, total_dice + 1):
             for f in set(my_dice):
                 candidate = Bid(q, f)
-                if candidate.is_higher_than(last_bid):
+                if candidate.is_higher_than(last_bid) and self.is_bid_possible(candidate, my_dice, total_dice, ones_wild, faces):
                     try:
                         candidate.validate(config)
                         return BidAction(candidate)
@@ -328,7 +392,7 @@ class SafeFaceAgent(HeuristicAgent):
         for q in range(last_bid.quantity, total_dice + 1):
             for f in faces:
                 candidate = Bid(q, f)
-                if candidate.is_higher_than(last_bid):
+                if candidate.is_higher_than(last_bid) and self.is_bid_possible(candidate, my_dice, total_dice, ones_wild, faces):
                     try:
                         candidate.validate(config)
                         return BidAction(candidate)
@@ -360,11 +424,15 @@ class OnesAreWildAgent(HeuristicAgent):
                 counts = Counter(my_dice)
                 face, _ = counts.most_common(1)[0]
                 return BidAction(Bid(1, face))
+        ones_wild = getattr(config, 'ones_wild', False)
+        # If last bid is impossible, call liar
+        if self.is_last_bid_impossible(last_bid, my_dice, total_dice, ones_wild, faces):
+            return CallLiarAction()
         # Prefer ones if wild
         if ones_wild:
             for q in range(last_bid.quantity, total_dice + 1):
                 candidate = Bid(q, 1)
-                if candidate.is_higher_than(last_bid):
+                if candidate.is_higher_than(last_bid) and self.is_bid_possible(candidate, my_dice, total_dice, ones_wild, faces):
                     try:
                         candidate.validate(config)
                         return BidAction(candidate)
@@ -374,7 +442,7 @@ class OnesAreWildAgent(HeuristicAgent):
         for q in range(last_bid.quantity, total_dice + 1):
             for f in set(my_dice):
                 candidate = Bid(q, f)
-                if candidate.is_higher_than(last_bid):
+                if candidate.is_higher_than(last_bid) and self.is_bid_possible(candidate, my_dice, total_dice, ones_wild, faces):
                     try:
                         candidate.validate(config)
                         return BidAction(candidate)
@@ -410,12 +478,16 @@ class BluffingAgent(HeuristicAgent):
                 counts = Counter(my_dice)
                 face, _ = counts.most_common(1)[0]
                 return BidAction(Bid(1, face))
+        ones_wild = getattr(config, 'ones_wild', False)
+        # If last bid is impossible, call liar
+        if self.is_last_bid_impossible(last_bid, my_dice, total_dice, ones_wild, faces):
+            return CallLiarAction()
         # Try bluff
         if not_in_hand and random.random() < self.bluff_chance:
             for q in range(last_bid.quantity, total_dice + 1):
                 for f in not_in_hand:
                     candidate = Bid(q, f)
-                    if candidate.is_higher_than(last_bid):
+                    if candidate.is_higher_than(last_bid) and self.is_bid_possible(candidate, my_dice, total_dice, ones_wild, faces):
                         try:
                             candidate.validate(config)
                             return BidAction(candidate)
@@ -425,7 +497,7 @@ class BluffingAgent(HeuristicAgent):
         for q in range(last_bid.quantity, total_dice + 1):
             for f in set(my_dice):
                 candidate = Bid(q, f)
-                if candidate.is_higher_than(last_bid):
+                if candidate.is_higher_than(last_bid) and self.is_bid_possible(candidate, my_dice, total_dice, ones_wild, faces):
                     try:
                         candidate.validate(config)
                         return BidAction(candidate)
@@ -455,7 +527,202 @@ class ThresholdLiarAgent(HeuristicAgent):
         threshold = self.threshold or ((total_dice + 1) // 2)
         if last_bid is None:
             return BidAction(Bid(1, random.choice(my_dice)))
+        ones_wild = getattr(config, 'ones_wild', False)
+        # If last bid is impossible, call liar
+        if self.is_last_bid_impossible(last_bid, my_dice, total_dice, ones_wild, faces):
+            return CallLiarAction()
         if last_bid.quantity > threshold:
+            return CallLiarAction()
+        # Otherwise, minimal valid raise
+        for q in range(last_bid.quantity, total_dice + 1):
+            for f in faces:
+                candidate = Bid(q, f)
+                if candidate.is_higher_than(last_bid) and self.is_bid_possible(candidate, my_dice, total_dice, ones_wild, faces):
+                    try:
+                        candidate.validate(config)
+                        return BidAction(candidate)
+                    except Exception:
+                        continue
+        return CallLiarAction()
+
+
+# ChaoticAgent: randomly chooses between minimal raise, maximal raise, or calling liar
+@register_agent("chaotic")
+class ChaoticAgent(HeuristicAgent):
+    """
+    ChaoticAgent:
+    - On each turn, randomly chooses to make a minimal raise, maximal raise, or call liar, regardless of state.
+    """
+    def __init__(self, allow_impossible=False):
+        super().__init__()
+        self.allow_impossible = allow_impossible
+
+    def choose_action(self, view):
+        from random import choice
+        my_dice = self.get_my_dice(view)
+        last_bid = self.get_last_bid(view)
+        config = self.get_config(view)
+        faces = config.faces
+        total_dice = self.get_num_dice(view)
+        ones_wild = getattr(config, 'ones_wild', False)
+        # If last bid is impossible and not allowed, call liar
+        if not self.allow_impossible and self.is_last_bid_impossible(last_bid, my_dice, total_dice, ones_wild, faces):
+            return CallLiarAction()
+        candidates = []
+        for q in range(last_bid.quantity, total_dice + 1):
+            for f in faces:
+                candidate = Bid(q, f)
+                if candidate.is_higher_than(last_bid):
+                    if self.allow_impossible or self.is_bid_possible(candidate, my_dice, total_dice, ones_wild, faces):
+                        try:
+                            candidate.validate(config)
+                            candidates.append(candidate)
+                        except Exception:
+                            continue
+        options = []
+        if candidates:
+            min_bid = min(candidates, key=lambda b: (b.quantity, b.face))
+            max_bid = max(candidates, key=lambda b: (b.quantity, b.face))
+            options.extend([BidAction(min_bid), BidAction(max_bid)])
+        options.append(CallLiarAction())
+        return choice(options)
+
+# Register both variants
+@register_agent("chaotic_safe")
+class ChaoticSafeAgent(ChaoticAgent):
+    def __init__(self):
+        super().__init__(allow_impossible=False)
+
+@register_agent("chaotic_unsafe")
+class ChaoticUnsafeAgent(ChaoticAgent):
+    def __init__(self):
+        super().__init__(allow_impossible=True)
+
+# AlternatorAgent: alternates between calling liar and minimal raise
+@register_agent("alternator")
+class AlternatorAgent(HeuristicAgent):
+    """
+    AlternatorAgent:
+    - Alternates between calling liar and making a minimal valid raise, regardless of state.
+    """
+    def __init__(self):
+        super().__init__()
+        self.last_action_was_liar = False
+
+    def choose_action(self, view):
+        my_dice = self.get_my_dice(view)
+        last_bid = self.get_last_bid(view)
+        config = self.get_config(view)
+        faces = config.faces
+        total_dice = self.get_num_dice(view)
+        if last_bid is None:
+            self.last_action_was_liar = False
+            return BidAction(Bid(1, random.choice(my_dice)))
+        if self.last_action_was_liar:
+            # Make minimal raise
+            for q in range(last_bid.quantity, total_dice + 1):
+                for f in faces:
+                    candidate = Bid(q, f)
+                    if candidate.is_higher_than(last_bid):
+                        try:
+                            candidate.validate(config)
+                            self.last_action_was_liar = False
+                            return BidAction(candidate)
+                        except Exception:
+                            continue
+            self.last_action_was_liar = False
+            return CallLiarAction()
+        else:
+            self.last_action_was_liar = True
+            return CallLiarAction()
+
+# CycleFaceAgent: always bids the next face in sequence, raising quantity as needed
+@register_agent("cycleface")
+class CycleFaceAgent(HeuristicAgent):
+    """
+    CycleFaceAgent:
+    - Always bids the next face in sequence (wrapping around), raising quantity as needed.
+    - Calls liar if no valid bid is possible.
+    """
+    def choose_action(self, view):
+        my_dice = self.get_my_dice(view)
+        last_bid = self.get_last_bid(view)
+        config = self.get_config(view)
+        faces = list(config.faces)
+        total_dice = self.get_num_dice(view)
+        if last_bid is None:
+            return BidAction(Bid(1, faces[0]))
+        # Find next face in sequence
+        try:
+            idx = faces.index(last_bid.face)
+        except ValueError:
+            idx = 0
+        for offset in range(1, len(faces) + 1):
+            next_face = faces[(idx + offset) % len(faces)]
+            for q in range(last_bid.quantity, total_dice + 1):
+                candidate = Bid(q, next_face)
+                if candidate.is_higher_than(last_bid):
+                    try:
+                        candidate.validate(config)
+                        return BidAction(candidate)
+                    except Exception:
+                        continue
+        return CallLiarAction()
+
+# ParityAgent: calls liar if last bid's quantity is even, else raises minimally
+@register_agent("parity")
+class ParityAgent(HeuristicAgent):
+    """
+    ParityAgent:
+    - If the last bid's quantity is even, calls liar; if odd, raises minimally.
+    """
+    def choose_action(self, view):
+        my_dice = self.get_my_dice(view)
+        last_bid = self.get_last_bid(view)
+        config = self.get_config(view)
+        faces = config.faces
+        total_dice = self.get_num_dice(view)
+        if last_bid is None:
+            return BidAction(Bid(1, random.choice(my_dice)))
+        if last_bid.quantity % 2 == 0:
+            return CallLiarAction()
+        # Otherwise, minimal valid raise
+        for q in range(last_bid.quantity, total_dice + 1):
+            for f in faces:
+                candidate = Bid(q, f)
+                if candidate.is_higher_than(last_bid):
+                    try:
+                        candidate.validate(config)
+                        return BidAction(candidate)
+                    except Exception:
+                        continue
+        return CallLiarAction()
+
+# RandomThresholdAgent: picks a random threshold at the start of each game
+@register_agent("randomthreshold")
+class RandomThresholdAgent(HeuristicAgent):
+    """
+    RandomThresholdAgent:
+    - Picks a random threshold at the start of each game and calls liar if the bid exceeds it.
+    - Otherwise, makes a minimal valid raise.
+    """
+    def __init__(self):
+        super().__init__()
+        self.threshold = None
+
+    def choose_action(self, view):
+        import math
+        my_dice = self.get_my_dice(view)
+        last_bid = self.get_last_bid(view)
+        config = self.get_config(view)
+        faces = config.faces
+        total_dice = self.get_num_dice(view)
+        if self.threshold is None or last_bid is None:
+            # Pick a new threshold at the start of each game
+            self.threshold = random.randint(math.ceil(total_dice / 3), total_dice)
+        if last_bid is None:
+            return BidAction(Bid(1, random.choice(my_dice)))
+        if last_bid.quantity > self.threshold:
             return CallLiarAction()
         # Otherwise, minimal valid raise
         for q in range(last_bid.quantity, total_dice + 1):
