@@ -1,7 +1,6 @@
 """
 csv_io.py
 Persistence utilities for writing Liar's Dice game summary and trajectory data to CSV files.
-Provides functions to append rows to summary and trajectory tables, and to prepare row dicts from game/engine data.
 """
 
 import os
@@ -9,10 +8,14 @@ import csv
 from typing import Dict, List, Any
 
 SUMMARY_HEADER = [
-    "game_id", "game_index", "timestamp", "agent0", "agent1", "winner", "loser", "steps", "bids", "calls", "bluffs_called", "error", "end_reason"
+    "game_id", "game_index", "timestamp", "agent0", "agent1", "winner", "loser",
+    "steps", "bids", "calls", "bluffs_called", "error", "end_reason",
+    # Added fields used by full_game.py for match-level reporting
+    "starting_dice_per_player", "rounds_played",
 ]
 TRAJECTORY_HEADER = [
-    "game_id", "event_type", "turn_index", "player", "player_type", "payload", "timestamp", "state", "action", "reward"
+    "game_id", "round", "event_type", "turn_index", "player", "player_type",
+    "payload", "timestamp", "state", "action", "reward"
 ]
 
 def append_row_to_csv(row: Dict[str, Any], csv_path: str, header: List[str]):
