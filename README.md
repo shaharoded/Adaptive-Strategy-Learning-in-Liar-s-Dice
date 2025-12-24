@@ -25,7 +25,8 @@ The engine models the abstract game of Liar's Dice, allowing you to:
 ## Requirements
 
 - Python 3.8+
-- No external dependencies required for core engine and basic agents
+- torch (optional)
+- tensorboard (optional)
 
 ## Installation
 
@@ -46,6 +47,33 @@ Run all unit tests from Root:
 python -m unittest discover -s tests -v
 ```
 
+
+## Training NashCFRAgent Policies (CFR)
+
+To train NashCFRAgent policies for all dice count combinations (multi-policy CFR):
+
+1. Install requirements (Python 3.8+, torch, tensorboard recommended for live monitoring):
+    ```powershell
+    pip install torch tensorboard
+    ```
+
+2. Run the training script from the project root:
+    ```powershell
+    python -m scripts.train_nash_cfr_agent --num_players 2 --max_dice 5 --iterations 10000 --tensorboard runs/nash_cfr --checkpoint liars_dice/agents/weights/nash_cfr_policy.pkl
+    ```
+    - This will train CFR policies for all dice count combinations (2 players, 1–5 dice each) and save to liars_dice/agents/weights/nash_cfr_policy.pkl.
+    - Use `--tensorboard <logdir>` to log average regret for live monitoring.
+    - Use `--checkpoint <path>` to resume training from a previous checkpoint.
+
+3. To view training progress live:
+    ```powershell
+    tensorboard --logdir runs/nash_cfr
+    ```
+    - Open the provided URL in your browser to see regret curves and training status.
+
+4. The trained policy file will be loaded automatically by NashCFRAgent when used in the engine.
+
+---
 ## How to Use the Engine
 
 ### 1. Create Agents
