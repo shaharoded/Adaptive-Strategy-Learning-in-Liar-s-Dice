@@ -1,12 +1,17 @@
 import tkinter as tk
 from tkinter import messagebox
 from typing import Optional
+import os
+import datetime
+import hashlib
 
 from liars_dice.core.config import GameConfig
 from liars_dice.core.engine import GameEngine, IllegalMoveError
 from liars_dice.core.actions import BidAction, CallLiarAction
 from liars_dice.core.bid import Bid
-from liars_dice.agents.random_agent import RandomAgent
+from liars_dice.core.reward import get_reward
+from liars_dice.agents import AGENT_MAP
+from liars_dice.persistence import csv_io
 
 
 class DiceCanvas(tk.Canvas):
@@ -76,12 +81,22 @@ class LiarDiceGUI:
         self._displayed_entries = []  # list of str
         self._bid_actors = []  # parallel list for which player made each bid (only for bids)
 
+        # CSV tracking variables
+        self.game_id = None
+        self.timestamp = None
+        self.trajectory_rows = []
+        self.data_dir = "data"
+        os.makedirs(self.data_dir, exist_ok=True)
+
         # Top controls: agent selection and start
         top = tk.Frame(root)
         top.pack(fill=tk.X, padx=10, pady=8)
         tk.Label(top, text="Opponent agent:", font=("Helvetica", 10)).pack(side=tk.LEFT)
-        self.agent_var = tk.StringVar(value="Random")
-        agent_menu = tk.OptionMenu(top, self.agent_var, "Random")
+        # Get all available agents from AGENT_MAP
+        agent_names = sorted([name.title() for name in AGENT_MAP.keys()])
+        default_agent = agent_names[0] if agent_names else "Random"
+        self.agent_var = tk.StringVar(value=default_agent)
+        agent_menu = tk.OptionMenu(top, self.agent_var, *agent_names)
         agent_menu.pack(side=tk.LEFT, padx=(6, 12))
         self.start_button = tk.Button(top, text="Start Game", command=self.start_game)
         self.start_button.pack(side=tk.LEFT)
@@ -160,12 +175,13 @@ class LiarDiceGUI:
 
     def start_game(self):
         # create the chosen agent and engine, then start round
-        choice = (self.agent_var.get() or "Random").lower()
-        if choice == "random":
-            self.agent = RandomAgent()
+        choice = (self.agent_var.get() or "").lower()
+        if choice in AGENT_MAP:
+            self.agent = AGENT_MAP[choice]()
         else:
-            # fallback
-            self.agent = RandomAgent()
+            # fallback to first available agent
+            first_agent = next(iter(AGENT_MAP.values()))
+            self.agent = first_agent()
         # enable restart button and hide start game
         self.engine = GameEngine(self.config)
         self.restart_button.config(state=tk.NORMAL)
@@ -180,14 +196,62 @@ class LiarDiceGUI:
     def start_new_round(self):
         if self.engine is None:
             self.engine = GameEngine(self.config)
+        
+        # Update agent selection in case user changed dropdown
+        choice = (self.agent_var.get() or "").lower()
+        if choice in AGENT_MAP:
+            self.agent = AGENT_MAP[choice]()
+        elif self.agent is None:
+            # fallback to first available agent if no agent set
+            first_agent = next(iter(AGENT_MAP.values()))
+            self.agent = first_agent()
+        
         self.engine.start_new_round()
         # clear bid history and actor tracking
         self.bid_listbox.delete(0, tk.END)
         self._displayed_entries.clear()
         self._bid_actors.clear()
+        
+        # Initialize CSV tracking for new round
+        self.timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        agent_name = self.agent.__class__.__name__ if self.agent else "Unknown"
+        raw_id = f"gui_{self.timestamp}_{os.getpid()}_{agent_name}"
+        self.game_id = hashlib.sha256(raw_id.encode()).hexdigest()[:16]
+        self.trajectory_rows = []
+        
+        # Record round start events
+        self._record_event("RoundStarted", {"round": self.engine.state.public.round_index}, 
+                          player_type=None, player=None, state=self.engine.get_view(0), 
+                          action=None, reward_val=0)
+        p0, p1 = self.engine.state.players
+        self._record_event("DiceRolled", {"player0": p0.private_dice.copy(), "player1": p1.private_dice.copy()},
+                          player_type=None, player=None, state=self.engine.get_view(0),
+                          action=None, reward_val=0)
+        
         self.update_ui()
         # If agent starts, schedule its move
         self.root.after(200, self.maybe_agent_move)
+
+    def _record_event(self, event_type, payload, player_type=None, player=None, state=None, action=None, reward_val=None):
+        """Record a trajectory event for CSV writing."""
+        if self.engine is None:
+            return
+        r = reward_val if reward_val is not None else get_reward(
+            event_type, state, action, player, self.engine.state.public
+        )
+        self.trajectory_rows.append({
+            "game_id": self.game_id,
+            "round": self.engine.state.public.round_index,
+            "event_type": event_type,
+            "turn_index": self.engine.state.public.turn_index,
+            "player": player,
+            "player_type": player_type,
+            "payload": str(payload),
+            "timestamp": self.timestamp,
+            "state": str(state) if state is not None else "",
+            "action": str(action) if action is not None else "",
+            "reward": r,
+        })
 
     def update_ui(self):
         if self.engine is None:
@@ -257,19 +321,29 @@ class LiarDiceGUI:
             return
         # check higher than last
         last = self.engine.state.public.last_bid
-        if not bid.is_higher_than(last, self.config):
+        if not bid.is_higher_than(last):
             self.status_var.set("Bid must be higher than last bid.")
             return
         try:
-            self.engine.apply_action(self.human_id, BidAction(bid))
+            action = BidAction(bid)
+            state = self.engine.get_view(self.human_id)
+            self.engine.apply_action(self.human_id, action)
             # Human is Player 1 -> use 'You' phrasing
             entry = f"You bid: {qty} x {face}"
             self.bid_listbox.insert(tk.END, entry)
             self._displayed_entries.append(entry)
             self._bid_actors.append(self.human_id)
             self.status_var.set(entry)
+            
+            # Record bid event
+            self._record_event("BidPlaced", {"bid": str(bid)},
+                             player_type="Human", player=self.human_id,
+                             state=state, action=action)
         except IllegalMoveError as e:
             self.status_var.set(f"Illegal move: {e}")
+            self._record_event("Error", str(e),
+                             player_type="Human", player=self.human_id,
+                             state=self.engine.get_view(self.human_id), action="Error")
         self.update_ui()
         # schedule agent move
         self.root.after(300, self.maybe_agent_move)
@@ -278,13 +352,23 @@ class LiarDiceGUI:
         if self.engine is None:
             return
         try:
-            self.engine.apply_action(self.human_id, CallLiarAction())
+            action = CallLiarAction()
+            state = self.engine.get_view(self.human_id)
+            self.engine.apply_action(self.human_id, action)
             entry = "You called liar"
             self.bid_listbox.insert(tk.END, entry)
             self._displayed_entries.append(entry)
             self.status_var.set(entry)
+            
+            # Record call liar event
+            self._record_event("LiarCalled", {"caller": self.human_id},
+                             player_type="Human", player=self.human_id,
+                             state=state, action=action)
         except IllegalMoveError as e:
             self.status_var.set(f"Illegal move: {e}")
+            self._record_event("Error", str(e),
+                             player_type="Human", player=self.human_id,
+                             state=self.engine.get_view(self.human_id), action="Error")
         self.update_ui()
         self.root.after(300, self.maybe_agent_move)
 
@@ -310,6 +394,7 @@ class LiarDiceGUI:
             return
         view = self.engine.get_view(self.agent_id)
         action = self.agent.choose_action(view)
+        agent_name = self.agent.__class__.__name__
         try:
             self.engine.apply_action(self.agent_id, action)
             # create friendly messages for agent actions
@@ -321,20 +406,39 @@ class LiarDiceGUI:
                 self._displayed_entries.append(entry)
                 self._bid_actors.append(self.agent_id)
                 self.status_var.set(entry)
+                
+                # Record bid event
+                self._record_event("BidPlaced", {"bid": str(b)},
+                                 player_type=agent_name, player=self.agent_id,
+                                 state=view, action=action)
             else:
                 entry = f"Player {self.agent_id} called liar"
                 self.bid_listbox.insert(tk.END, entry)
                 self._displayed_entries.append(entry)
                 self.status_var.set(entry)
+                
+                # Record call liar event
+                self._record_event("LiarCalled", {"caller": self.agent_id},
+                                 player_type=agent_name, player=self.agent_id,
+                                 state=view, action=action)
         except IllegalMoveError as e:
             # fallback: agent calls liar
             self.status_var.set(f"Agent made illegal move: {e}. Calling liar instead.")
+            self._record_event("Error", str(e),
+                             player_type=agent_name, player=self.agent_id,
+                             state=view, action="Error")
             try:
-                self.engine.apply_action(self.agent_id, CallLiarAction())
+                fallback_action = CallLiarAction()
+                self.engine.apply_action(self.agent_id, fallback_action)
                 entry = f"Player {self.agent_id} called liar"
                 self.bid_listbox.insert(tk.END, entry)
                 self._displayed_entries.append(entry)
                 self.status_var.set(entry)
+                
+                # Record fallback call liar
+                self._record_event("LiarCalled", {"caller": self.agent_id, "fallback": True},
+                                 player_type=agent_name, player=self.agent_id,
+                                 state=self.engine.get_view(self.agent_id), action=fallback_action)
             except IllegalMoveError:
                 pass
         self.update_ui()
@@ -344,9 +448,72 @@ class LiarDiceGUI:
     def on_round_ended(self):
         public = self.engine.state.public
         p0, p1 = self.engine.state.players
+        
+        # Record dice reveal and round end events
+        self._record_event("DiceRevealed", 
+                          {"all_dice": {0: p0.private_dice, 1: p1.private_dice}},
+                          player_type=None, player=None,
+                          state=self.engine.get_view(0), action=None, reward_val=0)
+        
+        # Record RoundEnded for each player with their respective rewards
+        # Agent (player 0)
+        agent_state = self.engine.get_view(self.agent_id)
+        agent_reward = get_reward("RoundEnded", agent_state, None, self.agent_id, public)
+        agent_name = self.agent.__class__.__name__ if self.agent else "Unknown"
+        self._record_event("RoundEnded", 
+                          {"winner": public.winner, "loser": public.loser,
+                           "match_count": None, "was_true": None},
+                          player_type=agent_name, player=self.agent_id,
+                          state=agent_state, action=None, reward_val=agent_reward)
+        
+        # Human (player 1)
+        human_state = self.engine.get_view(self.human_id)
+        human_reward = get_reward("RoundEnded", human_state, None, self.human_id, public)
+        self._record_event("RoundEnded", 
+                          {"winner": public.winner, "loser": public.loser,
+                           "match_count": None, "was_true": None},
+                          player_type="Human", player=self.human_id,
+                          state=human_state, action=None, reward_val=human_reward)
+        
+        # Write trajectory to CSV
+        trajectory_csv = os.path.join(self.data_dir, "game_trajectory.csv")
+        trajectory_header = csv_io.get_trajectory_header()
+        csv_io.append_rows_to_csv(self.trajectory_rows, trajectory_csv, trajectory_header)
+        
+        # Write summary to CSV
+        summary_csv = os.path.join(self.data_dir, "game_summary.csv")
+        summary_header = csv_io.get_summary_header()
+        
+        # Calculate stats
+        steps = len([row for row in self.trajectory_rows if row["event_type"] in ("BidPlaced", "LiarCalled")])
+        bids = len([row for row in self.trajectory_rows if row["event_type"] == "BidPlaced"])
+        calls = len([row for row in self.trajectory_rows if row["event_type"] == "LiarCalled"])
+        bluffs_called = 0  # Could be enhanced based on round outcome analysis
+        
+        agent_name = self.agent.__class__.__name__ if self.agent else "Unknown"
+        summary_row = {
+            "game_id": self.game_id,
+            "game_index": None,  # Not applicable for GUI games
+            "timestamp": self.timestamp,
+            "agent0": agent_name,  # agent is player 0
+            "agent1": "Human",     # human is player 1
+            "winner": public.winner,
+            "loser": public.loser,
+            "steps": steps,
+            "bids": bids,
+            "calls": calls,
+            "bluffs_called": bluffs_called,
+            "error": None,
+            "end_reason": "winner declared" if public.winner is not None else None,
+            "starting_dice_per_player": None,  # Not applicable for single-round GUI
+            "rounds_played": None,  # Not applicable for single-round GUI
+        }
+        csv_io.append_row_to_csv(summary_row, summary_csv, summary_header)
+        
         msg = f"Round ended. Winner: Player {public.winner} (loser: {public.loser})\n"
         msg += f"Final bid: {public.last_bid.quantity if public.last_bid else 'N/A'} x {public.last_bid.face if public.last_bid else 'N/A'}\n"
-        msg += f"Player 0 dice: {tuple(p0.private_dice)}\nPlayer 1 dice: {tuple(p1.private_dice)}"
+        msg += f"Player 0 dice: {tuple(p0.private_dice)}\nPlayer 1 dice: {tuple(p1.private_dice)}\n\n"
+        msg += f"Game data saved to {self.data_dir}/"
         messagebox.showinfo("Round Result", msg)
 
 

@@ -47,6 +47,132 @@ Run all unit tests from Root:
 python -m unittest discover -s tests -v
 ```
 
+## Available Scripts
+
+The project includes several scripts for different simulation and testing scenarios:
+
+### 1. `run_experiments.py` - Single-Round Games
+Simulates individual **single-round games** between two agents. Each game ends when someone calls "Liar".
+
+**Use case**: Quick testing, data collection, analyzing single-round strategies
+
+**Run from project root**:
+```powershell
+python -m scripts.run_experiments
+```
+
+**Configuration**: Edit the script's `main()` function to set:
+- `agent_1` and `agent_2`: Agent names (e.g., "random", "heuristic", "nash_cfr")
+- `number_of_games`: How many games to run
+- `data_dir`: Output directory for CSV files (default: "data")
+
+**Output**: 
+- `data/game_summary.csv`: Game results and statistics
+- `data/game_trajectory.csv`: Turn-by-turn events and states
+
+### 2. `full_game.py` - Full Multi-Round Matches
+Simulates **complete matches** with multiple rounds. After each round, the loser loses 1 die. Match continues until one player reaches 0 dice.
+
+**Use case**: Realistic gameplay simulation, testing endurance/adaptation strategies
+
+**Run from project root**:
+```powershell
+python -m scripts.full_game
+```
+
+**Configuration**: Edit the script's `main()` function to set:
+- `agent_1` and `agent_2`: Agent names
+- `number_of_matches`: How many full matches to run
+- `data_dir`: Output directory (default: "data")
+
+**Output**:
+- `data/match_summary.csv`: Match results with rounds played
+- `data/match_trajectory.csv`: All events across all rounds
+
+### 3. `run_tournament.py` - Single-Round Tournament
+Runs a **round-robin tournament** where all agent pairings play single-round games against each other.
+
+**Use case**: Comparing agent performance across single rounds
+
+**Run from project root**:
+```powershell
+python -m scripts.run_tournament --agents all --games 10 --data-dir data
+```
+
+**Options**:
+- `--agents`: Comma-separated agent list or "all" (e.g., "random,heuristic" or "all")
+- `--games`: Number of games per ordered pairing
+- `--data-dir`: Output directory
+
+**Output**:
+- `data/game_summary.csv`: Individual game results
+- `data/game_trajectory.csv`: Turn-by-turn events
+- `data/tournament_summary.csv`: Per-pairing statistics
+- `data/agent_stats.csv`: Aggregated win rates per agent
+- `data/win_percentages.png`: Win percentage chart
+
+### 4. `run_tournament_full_game.py` - Full-Match Tournament
+Same as tournament #3, but uses **full multi-round matches** instead of single rounds.
+
+**Use case**: Comprehensive agent comparison with realistic match conditions
+
+**Run from project root**:
+```powershell
+python -m scripts.run_tournament_full_game --agents all --games 10 --data-dir data
+```
+
+**Options**: Same as `run_tournament.py`
+
+**Output**: Same files as `run_tournament.py` but with match-level data
+
+## User Interfaces
+
+The project includes both CLI and GUI interfaces for human play:
+
+### CLI (Command-Line Interface)
+
+Play Liar's Dice in the terminal against an agent.
+
+**Run from project root**:
+```powershell
+python -m UI.cli
+```
+
+**Features**:
+- Interactive text-based gameplay
+- Choose from available agents
+- View game rules
+- All games are saved to `data/game_summary.csv` and `data/game_trajectory.csv`
+
+**Controls**:
+- Menu navigation: Enter 1, 2, or 3
+- Actions: Choose "Bid" or "Call Liar"
+- Input bids: Enter quantity and face values when prompted
+
+### GUI (Graphical Interface)
+
+Play Liar's Dice with a visual interface.
+
+**Run from project root**:
+```powershell
+python -m UI.gui
+```
+
+**Features**:
+- Visual dice display (your dice shown, opponent's hidden)
+- Interactive buttons for bidding and calling liar
+- Bid history tracking
+- Real-time game status updates
+- All games are saved to `data/game_summary.csv` and `data/game_trajectory.csv`
+
+**Controls**:
+- Select opponent agent from dropdown
+- Click "Start Game" to begin
+- Enter quantity and face in text boxes
+- Click "Bid" or "Call Liar" buttons
+- Click "New Round" to play again
+
+**Note**: Both CLI and GUI record game data to the same CSV files, allowing you to analyze human gameplay alongside agent self-play data.
 
 ## Training NashCFRAgent Policies (CFR)
 
@@ -123,20 +249,25 @@ Edit the configuration section at the top of scripts/run_experiments.py to set t
 - Collect event/state data for analysis or training
 - Useful for developing/testing new agent strategies
 
-#### B. Running from CLI (Human-vs-Agent)
-Use this mode to play interactively as a human against an agent, using the provided CLI interface. This is ideal for manual testing, demos, or playing the game yourself.
+#### B. Running the User Interfaces (Human-vs-Agent)
+Use the CLI or GUI to play interactively as a human against an agent. This is ideal for manual testing, demos, or playing the game yourself.
 
-**Example:**
-
+**CLI Example:**
 ```powershell
 python -m UI.cli
 ```
 
-You will be prompted for your moves in the terminal, while the agent plays automatically.
+**GUI Example:**
+```powershell
+python -m UI.gui
+```
 
 **Purpose:**
 - Play as a human against a bot
 - Useful for debugging, demonstrations, or exploring the game manually
+- Both interfaces save game data to CSV files for later analysis
+
+For detailed UI usage, see the **User Interfaces** section above.
 
 ---
 
@@ -172,6 +303,10 @@ The engine is designed for **reproducible, event-sourced data collection**:
 - Replay games deterministically using stored events
 - Analyze agent behavior and strategy effectiveness
 
+## TO-DO:
+
+1. GUI and CLI should play a full game, not a single round (with decreasing number of dice and no option to change agent unless starting a new game).
+2. Data collection method should be tuned for training.
 ---
 
 For more details, see `liars_dice_plan.md`.

@@ -149,9 +149,19 @@ class GameEngine:
             dict: Player view for agent decision-making.
         """
         p = self.state.players[player_id]
+        # Create an enhanced public state with dice_counts added
+        # This avoids modifying the PublicState dataclass
+        class PublicStateView:
+            def __init__(self, public_state, players):
+                self._public = public_state
+                self.dice_counts = tuple(pl.num_dice for pl in players)
+            
+            def __getattr__(self, name):
+                return getattr(self._public, name)
+        
         return {
             "player_id": player_id,
-            "public": self.state.public,
+            "public": PublicStateView(self.state.public, self.state.players),
             "my_dice": tuple(p.private_dice),
             "config": self.config,
         }

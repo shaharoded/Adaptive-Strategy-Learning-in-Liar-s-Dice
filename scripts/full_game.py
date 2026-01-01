@@ -12,7 +12,7 @@ Usage: edit the configuration in main() and run this script.
 import os
 import datetime
 import hashlib
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 from liars_dice.persistence import csv_io
 from liars_dice.core.config import GameConfig
@@ -26,7 +26,7 @@ def generate_match_id(agent0_cls, agent1_cls, timestamp):
     return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
-def run_full_match(agent0_cls, agent1_cls, cfg: GameConfig, match_index: int, match_id: str, timestamp: str) -> (Dict[str, Any], List[Dict[str, Any]]):
+def run_full_match(agent0_cls, agent1_cls, cfg: GameConfig, match_index: int, match_id: str, timestamp: str) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
     """Run a full match: multiple rounds until one player has zero dice.
 
     Returns a tuple of (match_summary, trajectory_rows) similar in structure to

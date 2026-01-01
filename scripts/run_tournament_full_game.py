@@ -13,7 +13,7 @@ import datetime
 import itertools
 import hashlib
 from collections import defaultdict
-from typing import List, Any, Dict
+from typing import List, Any, Dict, Tuple
 
 try:
     import matplotlib
@@ -36,7 +36,7 @@ def generate_game_id(agent0_cls, agent1_cls, timestamp: str) -> str:
     return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
-def run_full_match(agent0_cls, agent1_cls, cfg: GameConfig, game_index: int, game_id: str, timestamp: str) -> (Dict[str, Any], List[Dict[str, Any]]):
+def run_full_match(agent0_cls, agent1_cls, cfg: GameConfig, game_index: int, game_id: str, timestamp: str) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
     """Run a full match (multiple rounds) between two agent classes.
 
     Returns (summary_row, trajectory_rows) compatible with csv_io headers.

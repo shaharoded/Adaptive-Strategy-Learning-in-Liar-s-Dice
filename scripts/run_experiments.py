@@ -20,7 +20,8 @@ def generate_game_id(agent0_cls, agent1_cls, timestamp):
 
 def run_game(agent0_cls, agent1_cls, cfg: GameConfig, game_index: int, game_id: str, timestamp: str) -> Dict[str, Any]:
     """
-    Run a single game between two agent classes with the given configuration.
+    Run a single game (single round) between two agent classes with the given configuration.
+    Each game ends when a winner is declared or an error occurs.
     Args:
         agent0_cls: Class of agent 0 (must implement choose_action(view)).
         agent1_cls: Class of agent 1.
