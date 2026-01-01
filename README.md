@@ -185,9 +185,9 @@ To train NashCFRAgent policies for all dice count combinations (multi-policy CFR
 
 2. Run the training script from the project root:
     ```powershell
-    python -m scripts.train_nash_cfr_agent --num_players 2 --max_dice 5 --iterations 10000 --tensorboard runs/nash_cfr --checkpoint liars_dice/agents/weights/nash_cfr_policy.pkl
+    python -m scripts.train_nash_cfr_agent --num_players 2 --max_dice 5 --iterations 1000000 --tensorboard runs/cfr_training --checkpoint liars_dice/agents/weights/nash_cfr_policy.pkl
     ```
-    - This will train CFR policies for all dice count combinations (2 players, 1–5 dice each) and save to liars_dice/agents/weights/nash_cfr_policy.pkl.
+    - This will train CFR policies for all dice count combinations (2 players, 1–5 dice each, with 1M games each) and save to liars_dice/agents/weights/nash_cfr_policy.pkl.
     - Use `--tensorboard <logdir>` to log average regret for live monitoring.
     - Use `--checkpoint <path>` to resume training from a previous checkpoint.
 
