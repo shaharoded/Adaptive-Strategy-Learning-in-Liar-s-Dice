@@ -41,25 +41,55 @@ class DiceCanvas(tk.Canvas):
         pad = max(4, s // 10)
         # draw background rectangle
         if face is None:
-            # back-face appearance
-            self.create_rectangle(pad, pad, s - pad, s - pad, fill="#666", outline="#333", width=2)
-            # draw a subtle pattern (three dots) or question mark
+            # back-face appearance with 3D effect
+            # Shadow layer
+            self.create_rectangle(pad+2, pad+2, s - pad+2, s - pad+2, fill="#222", outline="")
+            # Main body with gradient effect
+            self.create_rectangle(pad, pad, s - pad, s - pad, fill="#4a4a4a", outline="#1a1a1a", width=2)
+            # Highlight for 3D effect
+            self.create_rectangle(pad+2, pad+2, s - pad-6, s - pad-6, fill="#666", outline="")
+            # Question mark
             try:
                 self.create_text(s/2, s/2, text="?", fill="white", font=("Helvetica", max(12, s//2), "bold"))
             except Exception:
-                # fallback if font size invalid
                 self.create_text(s/2, s/2, text="?", fill="white")
             return
 
-        # draw rounded-ish rect for face-up dice
-        self.create_rectangle(pad, pad, s - pad, s - pad, fill="white", outline="#333", width=2)
-        # draw pips
+        # 3D dice effect with shadow and beveled edges
+        # Shadow layer (bottom-right)
+        self.create_rectangle(pad+3, pad+3, s - pad+3, s - pad+3, fill="#c0c0c0", outline="")
+        
+        # Main dice body (ivory/cream color)
+        self.create_rectangle(pad, pad, s - pad, s - pad, fill="#f5f5dc", outline="#8b7355", width=2)
+        
+        # Top-left highlight (lighter edge for 3D effect)
+        self.create_line(pad+2, pad+2, s-pad-2, pad+2, fill="#ffffff", width=2)  # top edge
+        self.create_line(pad+2, pad+2, pad+2, s-pad-2, fill="#ffffff", width=2)  # left edge
+        
+        # Bottom-right shadow (darker edge for depth)
+        self.create_line(pad+2, s-pad-2, s-pad-2, s-pad-2, fill="#d4c4a8", width=2)  # bottom edge
+        self.create_line(s-pad-2, pad+2, s-pad-2, s-pad-2, fill="#d4c4a8", width=2)  # right edge
+        
+        # Inner bevel for extra depth
+        self.create_rectangle(pad+4, pad+4, s-pad-4, s-pad-4, outline="#e8dcc0", width=1)
+        
+        # Draw pips with 3D effect
         positions = self._POSITIONS.get(face, [])
         pip_r = max(3, s // 12)
         for (nx, ny) in positions:
             x = pad + nx * (s - 2 * pad)
             y = pad + ny * (s - 2 * pad)
-            self.create_oval(x - pip_r, y - pip_r, x + pip_r, y + pip_r, fill="#111", outline="")
+            # Pip shadow
+            self.create_oval(x - pip_r + 1, y - pip_r + 1, x + pip_r + 1, y + pip_r + 1, 
+                           fill="#666", outline="")
+            # Main pip (glossy black)
+            self.create_oval(x - pip_r, y - pip_r, x + pip_r, y + pip_r, 
+                           fill="#1a1a1a", outline="#000", width=1)
+            # Highlight on pip for shine
+            highlight_r = max(1, pip_r // 3)
+            self.create_oval(x - highlight_r, y - highlight_r - pip_r//3, 
+                           x + highlight_r, y + highlight_r - pip_r//3,
+                           fill="#4a4a4a", outline="")
 
     def set_face(self, face: Optional[int]):
         self.face = face
