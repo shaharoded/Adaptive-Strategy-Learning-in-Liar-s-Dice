@@ -138,7 +138,9 @@ def show_rules(config: GameConfig):
 
 def play_against(agent_name: str = "random", config: Optional[GameConfig] = None):
     """
-    Play a single round of Liar's Dice as a human (player 0) against an agent (player 1) in the CLI.
+    Play a full match of Liar's Dice as a human (player 0) against an agent (player 1) in the CLI.
+    The match consists of multiple rounds where the loser of each round loses one die.
+    The match ends when one player has zero dice.
     Args:
         agent_name (str): Name of the agent to play against (default 'random').
         config (GameConfig, optional): Game configuration. If None, uses default config.
@@ -149,129 +151,178 @@ def play_against(agent_name: str = "random", config: Optional[GameConfig] = None
     engine = GameEngine(config)
     agent = choose_agent(agent_name)
 
-    # Generate a hashed game_id for consistency with experiment script
-    timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
-    raw_id = f"cli_{timestamp}_{os.getpid()}_{agent_name}"
-    game_id = hashlib.sha256(raw_id.encode()).hexdigest()[:16]
     data_dir = "data"
     os.makedirs(data_dir, exist_ok=True)
     trajectory_csv = os.path.join(data_dir, "game_trajectory.csv")
+    summary_csv = os.path.join(data_dir, "game_summary.csv")
     trajectory_header = csv_io.get_trajectory_header()
-    timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
-    trajectory_rows = []
-    def record_event(event_type, payload, player_type=None, turn_index=None, player=None, state=None, action=None, reward_val=None):
-        r = reward_val if reward_val is not None else get_reward(event_type, state, action, player, engine.state.public)
-        trajectory_rows.append({
-            "game_id": game_id,
-            "event_type": event_type,
-            "turn_index": turn_index if turn_index is not None else engine.state.public.turn_index,
-            "player": player,
-            "player_type": player_type,
-            "payload": str(payload),
-            "timestamp": timestamp,
-            "state": str(state) if state is not None else "",
-            "action": str(action) if action is not None else "",
-            "reward": r,
-        })
-
-    # Start round and record initial events
-    engine.start_new_round()
-    record_event("RoundStarted", {"round": engine.state.public.round_index}, player_type=None, turn_index=engine.state.public.turn_index, player=None, state=engine.get_view(0), action=None, reward_val=0)
-    p0, p1 = engine.state.players
-    record_event("DiceRolled", {"player0": p0.private_dice.copy(), "player1": p1.private_dice.copy()}, player_type=None, turn_index=engine.state.public.turn_index, player=None, state=engine.get_view(0), action=None, reward_val=0)
+    summary_header = csv_io.get_summary_header()
 
     # Let human be player 0 and agent be player 1
     human_id = 0
     agent_id = 1
+    
+    # Full match loop: play rounds until one player has zero dice
+    # Each round is saved as a separate game
+    print("\n=== STARTING FULL MATCH ===")
+    print(f"Playing against: {type(agent).__name__}")
+    print(f"Starting dice: 5 each\n")
+    
+    round_number = 0
+    while True:
+        # Check if match is over (any player has zero dice)
+        p0, p1 = engine.state.players
+        if p0.num_dice <= 0 or p1.num_dice <= 0:
+            break
+            
+        # Start new round - each round gets its own game_id
+        round_number += 1
+        timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        raw_id = f"cli_{timestamp}_{os.getpid()}_{agent_name}_round{round_number}"
+        game_id = hashlib.sha256(raw_id.encode()).hexdigest()[:16]
+        trajectory_rows = []
+        
+        def record_event(event_type, payload, player_type=None, turn_index=None, player=None, state=None, action=None, reward_val=None):
+            r = reward_val if reward_val is not None else get_reward(event_type, state, action, player, engine.state.public)
+            trajectory_rows.append({
+                "game_id": game_id,
+                "event_type": event_type,
+                "turn_index": turn_index if turn_index is not None else engine.state.public.turn_index,
+                "player": player,
+                "player_type": player_type,
+                "payload": str(payload),
+                "timestamp": timestamp,
+                "state": str(state) if state is not None else "",
+                "action": str(action) if action is not None else "",
+                "reward": r,
+            })
+        
+        engine.start_new_round()
+        
+        print(f"\n{'='*50}")
+        print(f"ROUND {round_number}")
+        print(f"{'='*50}")
+        print(f"Your dice: {p0.num_dice} | Agent dice: {p1.num_dice}\n")
+        
+        record_event("RoundStarted", {"round": engine.state.public.round_index}, player_type=None, turn_index=engine.state.public.turn_index, player=None, state=engine.get_view(0), action=None, reward_val=0)
+        p0, p1 = engine.state.players
+        record_event("DiceRolled", {"player0": p0.private_dice.copy(), "player1": p1.private_dice.copy()}, player_type=None, turn_index=engine.state.public.turn_index, player=None, state=engine.get_view(0), action=None, reward_val=0)
 
-    while not engine.is_terminal():
-        # Show human view only when it's their turn; otherwise ask agent for action and apply
-        current = engine.state.public.current_player
-        if current == human_id:
-            view = engine.get_view(human_id)
-            print_state(view)
-            action = None
-            while action is None:
-                action = prompt_action(view)
-            try:
-                engine.apply_action(human_id, action)
-                # Record human action
-                if isinstance(action, BidAction):
-                    record_event("BidPlaced", {"player": human_id, "bid": (action.bid.quantity, action.bid.face)}, player_type="Human", turn_index=engine.state.public.turn_index, player=human_id, state=view, action=action, reward_val=0)
-                elif isinstance(action, CallLiarAction):
-                    record_event("LiarCalled", {"caller": human_id, "last_bid": engine.state.public.last_bid}, player_type="Human", turn_index=engine.state.public.turn_index, player=human_id, state=view, action=action, reward_val=0)
-            except IllegalMoveError as e:
-                print(f"Illegal move: {e}")
-                continue
-        else:
-            # Agent's turn
-            view = engine.get_view(agent_id)
-            action = agent.choose_action(view)
-            print(f"Agent action: {type(action).__name__}")
-            try:
-                engine.apply_action(agent_id, action)
-                # Record agent action
-                if isinstance(action, BidAction):
-                    record_event("BidPlaced", {"player": agent_id, "bid": (action.bid.quantity, action.bid.face)}, player_type=type(agent).__name__, turn_index=engine.state.public.turn_index, player=agent_id, state=view, action=action, reward_val=0)
-                elif isinstance(action, CallLiarAction):
-                    record_event("LiarCalled", {"caller": agent_id, "last_bid": engine.state.public.last_bid}, player_type=type(agent).__name__, turn_index=engine.state.public.turn_index, player=agent_id, state=view, action=action, reward_val=0)
-            except IllegalMoveError as e:
-                # If agent made illegal move, treat as pass/call liar
-                print(f"Agent made illegal move: {e}. Agent will call liar instead.")
-                engine.apply_action(agent_id, CallLiarAction())
-                record_event("LiarCalled", {"caller": agent_id, "last_bid": engine.state.public.last_bid}, player_type=type(agent).__name__, turn_index=engine.state.public.turn_index, player=agent_id, state=view, action="CallLiarAction", reward_val=0)
+        round_steps = 0
+        round_bids = 0
+        round_calls = 0
+        while not engine.is_terminal():
+            # Show human view only when it's their turn; otherwise ask agent for action and apply
+            current = engine.state.public.current_player
+            if current == human_id:
+                view = engine.get_view(human_id)
+                print_state(view)
+                action = None
+                while action is None:
+                    action = prompt_action(view)
+                try:
+                    engine.apply_action(human_id, action)
+                    round_steps += 1
+                    # Record human action
+                    if isinstance(action, BidAction):
+                        round_bids += 1
+                        record_event("BidPlaced", {"player": human_id, "bid": (action.bid.quantity, action.bid.face)}, player_type="Human", turn_index=engine.state.public.turn_index, player=human_id, state=view, action=action, reward_val=0)
+                    elif isinstance(action, CallLiarAction):
+                        round_calls += 1
+                        record_event("LiarCalled", {"caller": human_id, "last_bid": engine.state.public.last_bid}, player_type="Human", turn_index=engine.state.public.turn_index, player=human_id, state=view, action=action, reward_val=0)
+                except IllegalMoveError as e:
+                    print(f"Illegal move: {e}")
+                    continue
+            else:
+                # Agent's turn
+                view = engine.get_view(agent_id)
+                action = agent.choose_action(view)
+                print(f"Agent action: {type(action).__name__}")
+                try:
+                    engine.apply_action(agent_id, action)
+                    round_steps += 1
+                    # Record agent action
+                    if isinstance(action, BidAction):
+                        round_bids += 1
+                        record_event("BidPlaced", {"player": agent_id, "bid": (action.bid.quantity, action.bid.face)}, player_type=type(agent).__name__, turn_index=engine.state.public.turn_index, player=agent_id, state=view, action=action, reward_val=0)
+                    elif isinstance(action, CallLiarAction):
+                        round_calls += 1
+                        record_event("LiarCalled", {"caller": agent_id, "last_bid": engine.state.public.last_bid}, player_type=type(agent).__name__, turn_index=engine.state.public.turn_index, player=agent_id, state=view, action=action, reward_val=0)
+                except IllegalMoveError as e:
+                    # If agent made illegal move, treat as pass/call liar
+                    print(f"Agent made illegal move: {e}. Agent will call liar instead.")
+                    engine.apply_action(agent_id, CallLiarAction())
+                    round_steps += 1
+                    round_calls += 1
+                    record_event("LiarCalled", {"caller": agent_id, "last_bid": engine.state.public.last_bid}, player_type=type(agent).__name__, turn_index=engine.state.public.turn_index, player=agent_id, state=view, action="CallLiarAction", reward_val=0)
 
-    # Round ended; show results
-    public = engine.state.public
-    print("\n--- ROUND ENDED ---")
-    print(f"Winner: Player {public.winner}")
-    print(f"Loser: Player {public.loser}")
-    print(f"Final bid: bid quantity:{public.last_bid.quantity}, face:{public.last_bid.face}")
-    # Reveal dice
+        # Round ended; show results
+        public = engine.state.public
+        print("\n--- ROUND ENDED ---")
+        print(f"Winner: Player {public.winner}")
+        print(f"Loser: Player {public.loser}")
+        print(f"Final bid: bid quantity:{public.last_bid.quantity}, face:{public.last_bid.face}")
+        # Reveal dice
+        p0, p1 = engine.state.players
+        print(f"Player 0 dice: {p0.private_dice}")
+        print(f"Player 1 dice: {p1.private_dice}")
+
+        # Record round end and dice reveal
+        record_event("DiceRevealed", {"all_dice": {0: p0.private_dice, 1: p1.private_dice}}, player_type=None, turn_index=engine.state.public.turn_index, player=None, state=engine.get_view(0), action=None, reward_val=0)
+        # Assign reward at end of round using get_reward
+        final_state = engine.get_view(0)
+        final_action = None
+        final_reward = get_reward("RoundEnded", final_state, final_action, None, public)
+        record_event("RoundEnded", {"winner": public.winner, "loser": public.loser, "match_count": None, "was_true": None}, player_type=None, turn_index=engine.state.public.turn_index, player=None, state=final_state, action=final_action, reward_val=final_reward)
+        
+        # Save this round as a separate game
+        csv_io.append_rows_to_csv(trajectory_rows, trajectory_csv, trajectory_header)
+        
+        summary_row = {
+            "game_id": game_id,
+            "game_index": round_number - 1,
+            "timestamp": timestamp,
+            "agent0": "Human",
+            "agent1": type(agent).__name__,
+            "winner": public.winner,
+            "loser": public.loser,
+            "steps": round_steps,
+            "bids": round_bids,
+            "calls": round_calls,
+            "bluffs_called": 0,
+            "error": None,
+            "end_reason": "winner declared" if public.winner is not None else None,
+        }
+        csv_io.append_row_to_csv(summary_row, summary_csv, summary_header)
+        
+        # Decrement loser's dice
+        if public.loser is not None:
+            loser = public.loser
+            engine.state.players[loser].num_dice = max(0, engine.state.players[loser].num_dice - 1)
+            print(f"\nPlayer {loser} loses a die! Now has {engine.state.players[loser].num_dice} dice.")
+    
+    # Match ended - determine winner
     p0, p1 = engine.state.players
-    print(f"Player 0 dice: {p0.private_dice}")
-    print(f"Player 1 dice: {p1.private_dice}")
-
-    # Record round end and dice reveal
-    record_event("DiceRevealed", {"all_dice": {0: p0.private_dice, 1: p1.private_dice}}, player_type=None, turn_index=engine.state.public.turn_index, player=None, state=engine.get_view(0), action=None, reward_val=0)
-    public = engine.state.public
-    # Assign reward at end of game using get_reward
-    final_state = engine.get_view(0)
-    final_action = None
-    final_reward = get_reward("RoundEnded", final_state, final_action, None, public)
-    record_event("RoundEnded", {"winner": public.winner, "loser": public.loser, "match_count": None, "was_true": None}, player_type=None, turn_index=engine.state.public.turn_index, player=None, state=final_state, action=final_action, reward_val=final_reward)
-
-    # Write trajectory rows to CSV using persistence API
-    csv_io.append_rows_to_csv(trajectory_rows, trajectory_csv, trajectory_header)
-    print(f"\n[Game events saved to {trajectory_csv}]")
-
-    # Write summary row to CSV using persistence API
-    summary_csv = os.path.join(data_dir, "game_summary.csv")
-    summary_header = csv_io.get_summary_header()
-    # Collect stats for summary row
-    steps = len([row for row in trajectory_rows if row["event_type"] in ("BidPlaced", "LiarCalled")])
-    bids = len([row for row in trajectory_rows if row["event_type"] == "BidPlaced"])
-    calls = len([row for row in trajectory_rows if row["event_type"] == "LiarCalled"])
-    bluffs_called = len([row for row in trajectory_rows if row["event_type"] == "RoundEnded" and ("was_true" in str(row["payload"])) and ("False" in str(row["payload"]))])
-    # Set end_reason to 'winner declared' if game ended normally
-    end_reason = "winner declared" if public.winner is not None else None
-    summary_row = {
-        "game_id": game_id,
-        "game_index": None,
-        "timestamp": timestamp,
-        "agent0": "Human",
-        "agent1": type(agent).__name__,
-        "winner": public.winner,
-        "loser": public.loser,
-        "steps": steps,
-        "bids": bids,
-        "calls": calls,
-        "bluffs_called": bluffs_called,
-        "error": None,
-        "end_reason": end_reason,
-    }
-    csv_io.append_row_to_csv(summary_row, summary_csv, summary_header)
-    print(f"[Game summary saved to {summary_csv}]")
+    if p0.num_dice <= 0:
+        match_winner = 1
+        match_loser = 0
+    elif p1.num_dice <= 0:
+        match_winner = 0
+        match_loser = 1
+    else:
+        match_winner = None
+        match_loser = None
+    
+    print(f"\n{'='*50}")
+    print(f"MATCH ENDED!")
+    print(f"{'='*50}")
+    if match_winner == human_id:
+        print("🎉 YOU WON THE MATCH! 🎉")
+    else:
+        print("Agent won the match.")
+    print(f"Total rounds played: {round_number}")
+    print(f"Final score - You: {p0.num_dice} dice | Agent: {p1.num_dice} dice")
+    print(f"\n[All {round_number} games saved to {data_dir}/game_trajectory.csv and game_summary.csv]")
 
 
 if __name__ == "__main__":
