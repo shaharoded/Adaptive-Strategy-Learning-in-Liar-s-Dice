@@ -1,6 +1,8 @@
 
 # Liar's Dice - Adaptive Strategy Learning Engine
 
+![Liar's Dice Banner](UI/images/banner.png)
+
 This repository implements a **headless, modular Liar's Dice game engine** designed for AI research, agent development, and strategy analysis. The engine supports:
 
 - **2 players (agents)**, default 5 dice per round (configurable distribution)
@@ -302,11 +304,6 @@ The engine is designed for **reproducible, event-sourced data collection**:
 - Use event logs and turn logs for supervised or RL training
 - Replay games deterministically using stored events
 - Analyze agent behavior and strategy effectiveness
-
-## TO-DO:
-
-1. GUI and CLI should play a full game, not a single round (with decreasing number of dice and no option to change agent unless starting a new game).
-2. Data collection method should be tuned for training.
 ---
 
 For more details, see `liars_dice_plan.md`.
