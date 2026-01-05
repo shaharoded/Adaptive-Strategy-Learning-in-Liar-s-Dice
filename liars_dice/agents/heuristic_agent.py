@@ -566,6 +566,13 @@ class ChaoticAgent(HeuristicAgent):
         faces = config.faces
         total_dice = self.get_num_dice(view)
         ones_wild = getattr(config, 'ones_wild', False)
+        
+        # If no last bid, make an opening bid
+        if last_bid is None:
+            q = random.randint(1, total_dice)
+            f = random.choice(faces)
+            return BidAction(Bid(q, f))
+        
         # If last bid is impossible and not allowed, call liar
         if not self.allow_impossible and self.is_last_bid_impossible(last_bid, my_dice, total_dice, ones_wild, faces):
             return CallLiarAction()
