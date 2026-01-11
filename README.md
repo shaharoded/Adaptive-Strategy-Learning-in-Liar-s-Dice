@@ -178,7 +178,7 @@ python -m UI.gui
 
 ## Training NashCFRAgent Policies (CFR)
 
-To train NashCFRAgent policies for all dice count combinations (multi-policy CFR):
+To train NashCFRAgent policies for all dice count combinations (multi-policy CFR) in parallel:
 
 1. Install requirements (Python 3.8+, torch, tensorboard recommended for live monitoring):
     ```powershell
@@ -187,17 +187,38 @@ To train NashCFRAgent policies for all dice count combinations (multi-policy CFR
 
 2. Run the training script from the project root:
     ```powershell
-    python -m scripts.train_nash_cfr_agent --num_players 2 --max_dice 5 --iterations 1000000 --tensorboard runs/cfr_training --checkpoint liars_dice/agents/weights/nash_cfr_policy.pkl
+    python -m scripts.train_nash_cfr_agent --num_players 2 --max_dice 5 --iterations 1000000 --tensorboard runs/cfr_training
     ```
-    - This will train CFR policies for all dice count combinations (2 players, 1–5 dice each, with 1M games each) and save to liars_dice/agents/weights/nash_cfr_policy.pkl.
-    - Use `--tensorboard <logdir>` to log average regret for live monitoring.
-    - Use `--checkpoint <path>` to resume training from a previous checkpoint.
+    - This will train CFR policies for all dice count combinations (2 players, 1–5 dice each) in parallel using available CPU cores.
+    - `--iterations`: Number of training iterations per configuration.
+    - `--tensorboard`: Directory to log convergence metrics.
+    - `--checkpoint` (or `--output`): Path to save the final merged policy file.
 
-3. To view training progress live:
-    ```powershell
-    tensorboard --logdir runs/nash_cfr
+    **Slurm Usage (High Performance Computing):**
+    The script automatically detects Slurm environments (`SLURM_CPUS_PER_TASK`) and scales accordingly.
+
+    ```bash
+    #!/bin/bash
+    #SBATCH --job-name=cfr_dice
+    #SBATCH --output=logs/train_%j.out
+    #SBATCH --ntasks=1
+    #SBATCH --cpus-per-task=32    <-- Script will use 32 workers
+    #SBATCH --mem=16G
+    #SBATCH --time=12:00:00
+
+    module load python/3.10
+    source .venv/bin/activate
+
+    python -m scripts.train_nash_cfr_agent --iterations 1000000 --tensorboard runs/cfr_hpc
     ```
-    - Open the provided URL in your browser to see regret curves and training status.
+
+3. **Monitor Training in TensorBoard**:
+    To view real-time convergence plots:
+    ```powershell
+    tensorboard --logdir runs/cfr_training
+    ```
+    - Navigate to `http://localhost:6006` in your browser.
+    - You will see convergence charts for each dice configuration (e.g., `1_1`, `2_3`).
 
 4. The trained policy file will be loaded automatically by NashCFRAgent when used in the engine.
 
