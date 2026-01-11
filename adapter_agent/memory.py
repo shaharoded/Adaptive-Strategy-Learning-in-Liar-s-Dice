@@ -2,7 +2,7 @@ import pickle
 from collections import defaultdict
 import os
 import tempfile
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, BinaryIO
 
 
 class Memory:
@@ -72,7 +72,7 @@ class Memory:
             dir=os.path.dirname(os.path.abspath(filepath)) or "."
         )
         try:
-            with os.fdopen(fd, 'wb') as f:
+            with os.fdopen(fd, 'wb') as f:  # type: BinaryIO
                 pickle.dump(payload, f, protocol=pickle.HIGHEST_PROTOCOL)
             os.replace(tmp_path, filepath)
         finally:
