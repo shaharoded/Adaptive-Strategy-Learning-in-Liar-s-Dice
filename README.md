@@ -292,8 +292,10 @@ Train the PPO agent through curriculum learning or against specific opponents:
     - Stage 23: Nash/CFR agent (150k steps)
     - Stage 24+: Self-play (optional)
     
+    **Auto-Resume:** Curriculum training automatically continues from existing model if found.
+    
     **Curriculum Options:**
-    - `--resume`: Continue from last checkpoint
+    - `--fresh-start`: Ignore existing model and start from scratch
     - `--timesteps N`: Override timesteps per stage
     - `--stages 5 10 15`: Train only specific stages
     - `--self-play`: Add self-play after curriculum

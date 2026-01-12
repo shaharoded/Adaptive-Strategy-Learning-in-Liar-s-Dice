@@ -126,6 +126,15 @@ def merge_partial_policies(weights_dir, output_path):
     final_data = {'policies': master_policies, 'metrics': master_metrics}
     NashCFRAgent.save_policy_dict(final_data, output_path)
     print(f"Successfully merged {len(master_policies)} configurations into {output_path}")
+    
+    # Clean up partial files after successful merge
+    print(f"Cleaning up {len(files)} partial policy files...")
+    for f_path in files:
+        try:
+            os.remove(f_path)
+        except Exception as e:
+            print(f"Warning: Could not delete {f_path}: {e}")
+    print("Cleanup complete.")
 
 def main():
     parser = argparse.ArgumentParser(description="Multi-process CFR Training for Liar's Dice")

@@ -132,7 +132,14 @@ def train_curriculum(resume=False, base_timesteps=None, stages=None, enable_earl
     
     # Path for the main model (gets updated after each stage)
     base_path = "./liars_dice/agents/weights/ppo_model"
-    current_model_path = base_path if resume else None
+    
+    # Auto-resume if model exists (unless explicitly starting fresh)
+    model_exists = os.path.exists(base_path + ".zip")
+    current_model_path = base_path if (resume or model_exists) else None
+    
+    if model_exists and not resume:
+        print(f"ℹ️  Found existing model - will continue training from: {base_path}.zip")
+        print(f"   (Use --fresh-start to ignore existing model)\n")
     
     print(f"Training Configuration:")
     print(f"  Game: {game_config.num_players} players, {game_config.total_dice} dice each")
@@ -150,16 +157,14 @@ def train_curriculum(resume=False, base_timesteps=None, stages=None, enable_earl
         print(f"CURRICULUM STAGE {stage_idx}/{len(curriculum)}: {opponent_name}")
         print(f"{'='*80}\n")
         
-        stage_model_name = f"ppo_model_stage{stage_idx:02d}_{opponent_name}"
-        
         # Handle potential errors (e.g., untrained Nash agent)
         try:
-            # Train against this opponent
+            # Train against this opponent (always save to same ppo_model.zip)
             saved_path = train_ppo_agent(
                 opponent_cls=opponent_cls,
                 game_config=game_config,
                 load_path=current_model_path,  # Load from previous stage or None
-                save_name=stage_model_name,
+                save_name="ppo_model",  # Always save to same file
                 total_timesteps=timesteps,
                 log_interval=10,
                 enable_early_stopping=enable_early_stopping,
@@ -182,22 +187,10 @@ def train_curriculum(resume=False, base_timesteps=None, stages=None, enable_earl
             # Continue with the same model path
             continue
     
-    # Final save to the base path
-    if current_model_path != base_path:
-        print(f"\n{'='*80}")
-        print("CURRICULUM COMPLETE - Saving final model")
-        print(f"{'='*80}\n")
-        
-        # Copy the final model to the base path
-        import shutil
-        final_source = current_model_path + ".zip"
-        final_dest = base_path + ".zip"
-        os.makedirs(os.path.dirname(final_dest), exist_ok=True)
-        shutil.copy2(final_source, final_dest)
-        print(f"Final model saved to: {final_dest}")
-    
+    # Curriculum complete
     print("\n" + "="*80)
     print("CURRICULUM TRAINING COMPLETE!")
+    print(f"Final model: {base_path}.zip")
     print("="*80 + "\n")
     
     print("To visualize training progress, run:")
@@ -270,7 +263,9 @@ def self_play_training(base_model_path, timesteps=100_000, num_iterations=3):
 def main():
     parser = argparse.ArgumentParser(description="Curriculum training for PPO agent")
     parser.add_argument("--resume", action="store_true", 
-                       help="Resume training from existing checkpoint")
+                       help="Explicitly resume from existing checkpoint (deprecated - auto-resumes by default)")
+    parser.add_argument("--fresh-start", action="store_true",
+                       help="Ignore existing model and start training from scratch")
     parser.add_argument("--timesteps", type=int, default=None,
                        help="Override timesteps per stage")
     parser.add_argument("--stages", type=int, nargs="+", default=None,
@@ -286,9 +281,9 @@ def main():
     
     args = parser.parse_args()
     
-    # Run curriculum training
+    # Run curriculum training (auto-resume unless fresh-start)
     train_curriculum(
-        resume=args.resume,
+        resume=not args.fresh_start,  # Auto-resume by default
         base_timesteps=args.timesteps,
         stages=args.stages,
         enable_early_stopping=not args.disable_early_stopping,
