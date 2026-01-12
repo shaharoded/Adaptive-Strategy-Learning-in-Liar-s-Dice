@@ -1,6 +1,5 @@
 from .config import GameConfig
 from .engine import GameEngine
-from .state import GameState
 
 class Game:
     def __init__(self, agents, config: GameConfig = None):

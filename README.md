@@ -176,53 +176,158 @@ python -m UI.gui
 
 **Note**: Both CLI and GUI record game data to the same CSV files, allowing you to analyze human gameplay alongside agent self-play data.
 
-## Training NashCFRAgent Policies (CFR)
+## Advanced AI Agents
 
-To train NashCFRAgent policies for all dice count combinations (multi-policy CFR) in parallel:
+The engine includes two sophisticated AI agents that learn optimal strategies through different approaches:
 
-1. Install requirements (Python 3.8+, torch, tensorboard recommended for live monitoring):
+### Nash/CFR Agent (Game-Theoretic Equilibrium)
+
+The **NashCFRAgent** uses **Counterfactual Regret Minimization (CFR)** to compute Nash equilibrium strategies for Liar's Dice.
+
+#### Theory
+
+CFR is a family of algorithms that iteratively minimizes regret to converge on optimal game-theoretic strategies. In two-player zero-sum games like Liar's Dice:
+
+- **Nash Equilibrium**: A strategy profile where no player can improve their expected value by unilaterally changing their strategy
+- **Counterfactual Regret**: Measures how much a player "regrets" not choosing a different action in hindsight
+- **CFR Algorithm**: Repeatedly samples game states, computes regrets, and adjusts strategy toward equilibrium
+
+The agent learns a **mixed strategy** (probabilistic action selection) that is unexploitable in the long run. This makes it particularly strong against any opponent, as it plays game-theoretically sound poker-like strategies.
+
+**Key Properties:**
+- Proven convergence to Nash equilibrium in two-player zero-sum games
+- Handles imperfect information (hidden dice) naturally
+- Learns optimal bluffing and calling frequencies
+- Works for any dice configuration (different numbers of dice per player)
+
+#### Training
+
+Train NashCFRAgent policies for all dice count combinations in parallel:
+
+1. **Install requirements**:
     ```powershell
     pip install torch tensorboard
     ```
 
-2. Run the training script from the project root:
+2. **Run training**:
     ```powershell
     python -m scripts.train_nash_cfr_agent --num_players 2 --max_dice 5 --iterations 1000000 --tensorboard runs/cfr_training
     ```
-    - This will train CFR policies for all dice count combinations (2 players, 1–5 dice each) in parallel using available CPU cores.
-    - `--iterations`: Number of training iterations per configuration.
-    - `--tensorboard`: Directory to log convergence metrics.
-    - `--checkpoint` (or `--output`): Path to save the final merged policy file.
+    
+    **Parameters:**
+    - `--iterations`: Number of CFR iterations per configuration (higher = better convergence)
+    - `--tensorboard`: Directory for TensorBoard logs
+    - `--checkpoint`: Path to save trained policies
+    
+    Training generates policies for all dice combinations ((1,1), (1,2), ..., (5,5)) in parallel.
 
-    **Slurm Usage (High Performance Computing):**
-    The script automatically detects Slurm environments (`SLURM_CPUS_PER_TASK`) and scales accordingly.
-
-    ```bash
-    #!/bin/bash
-    #SBATCH --job-name=cfr_dice
-    #SBATCH --output=logs/train_%j.out
-    #SBATCH --ntasks=1
-    #SBATCH --cpus-per-task=32    <-- Script will use 32 workers
-    #SBATCH --mem=16G
-    #SBATCH --time=12:00:00
-
-    module load python/3.10
-    source .venv/bin/activate
-
-    python -m scripts.train_nash_cfr_agent --iterations 1000000 --tensorboard runs/cfr_hpc
-    ```
-
-3. **Monitor Training in TensorBoard**:
-    To view real-time convergence plots:
+3. **Monitor convergence**:
     ```powershell
     tensorboard --logdir runs/cfr_training
     ```
-    - Navigate to `http://localhost:6006` in your browser.
-    - You will see convergence charts for each dice configuration (e.g., `1_1`, `2_3`).
+    Navigate to `http://localhost:6006` to view convergence plots for each configuration.
 
-4. The trained policy file will be loaded automatically by NashCFRAgent when used in the engine.
+4. **HPC/Slurm Usage**:
+    ```bash
+    #!/bin/bash
+    #SBATCH --cpus-per-task=32
+    #SBATCH --mem=16G
+    #SBATCH --time=12:00:00
+    
+    python -m scripts.train_nash_cfr_agent --iterations 1000000
+    ```
+
+The trained policy is automatically loaded by `NashCFRAgent` when used in the engine.
 
 ---
+
+### PPO Agent (Deep Reinforcement Learning)
+
+The **PPOAgent** uses **Proximal Policy Optimization** to learn strategies through self-play against diverse opponents.
+
+#### Theory
+
+PPO is a policy gradient reinforcement learning algorithm that learns by trial and error:
+
+- **Policy Network**: Neural network that maps game observations to action probabilities
+- **Value Network**: Estimates expected future rewards from current state
+- **Clipped Objective**: Prevents destructive policy updates that hurt performance
+- **Advantage Estimation**: Learns which actions are better than average
+
+The agent learns through **curriculum training**: starting with simple opponents and progressively facing harder strategies, similar to how humans learn games.
+
+**Key Properties:**
+- Learns general strategies that adapt to opponent behavior
+- Uses action masking to only consider legal moves
+- Handles temporal sequences through history encoding
+- Can discover novel strategies not based on game theory
+
+#### Architecture
+
+- **Observation**: Hand + dice counts + sliding window of last 10 actions (49-dim vector)
+- **Policy**: 2-layer MLP [256, 256] with ReLU activations (adjustable)
+- **Action Space**: Discrete (Call Liar + all valid bids)
+- **Training**: MaskablePPO with entropy bonus for exploration
+
+#### Training
+
+Train the PPO agent through curriculum learning against all available agents:
+
+1. **Install requirements**:
+    ```powershell
+    pip install sb3-contrib tensorboard gymnasium
+    ```
+
+2. **Run curriculum training**:
+    ```powershell
+    python scripts/train_ppo_curriculum.py
+    ```
+    
+    This trains the agent against 25+ opponents in increasing difficulty:
+    - Stage 1-3: Random agents (90k steps)
+    - Stage 4-7: Simple heuristics (160k steps)
+    - Stage 8-13: Advanced heuristics (300k steps)
+    - Stage 14-21: Specialized strategies (480k steps)
+    - Stage 22: Bayesian agent (100k steps)
+    - Stage 23: Nash/CFR agent (150k steps)
+    - Stage 24+: Self-play (optional)
+    
+    **Options:**
+    - `--resume`: Continue from last checkpoint
+    - `--timesteps N`: Override timesteps per stage
+    - `--stages 5 10 15`: Train only specific stages
+    - `--self-play`: Add self-play after curriculum
+
+3. **Monitor training**:
+    ```powershell
+    tensorboard --logdir=./runs/ppo_training/
+    ```
+    Navigate to `http://localhost:6006` to view:
+    - Episode rewards (convergence indicator)
+    - Policy/value losses
+    - Exploration metrics (entropy)
+    - Win rates against each opponent
+
+4. **Resume training** (for curriculum learning):
+    ```powershell
+    python scripts/train_ppo_curriculum.py --resume --timesteps 50000
+    ```
+    
+    The agent automatically loads the last saved model and continues training.
+
+**Trained models** are saved to `liars_dice/agents/weights/` and can be loaded with:
+```python
+from liars_dice.agents.ppo_agent import PPOAgent
+agent = PPOAgent()  # Loads default model
+```
+
+**Notes:**
+- Untrained agents (Nash/CFR or PPO) are automatically skipped during curriculum training
+- Both agents raise `UntrainedAgentException` if model files are missing
+- Training checkpoints are saved every 10k steps for recovery
+
+---
+
 ## How to Use the Engine
 
 ### 1. Create Agents
@@ -310,22 +415,9 @@ For detailed UI usage, see the **User Interfaces** section above.
 - In-memory: `engine._events`, `engine.turn_log`, and via `InMemoryRecorder`
 - Extendable: Implement custom recorders in `liars_dice/persistence/recorder.py`
 
-## Extending the Project: AI & Agents
-### Agent Development Roadmap
-1. **Rule-based agents**: Implement agents with simple heuristics (e.g., always raise, always call liar after N turns, etc.)
-2. **Statistical agents**: Use probability and opponent modeling
-3. **Reinforcement Learning (RL/DRL) agents**: Train agents via self-play using collected event/state data
-4. **Strategy classifier**: Build a model to classify opponent strategies and adapt play accordingly
-
-See `liars_dice/agents/` for agent templates. All agents must implement `choose_action(view)`.
-
 ## Data for Training & Analysis
 
 The engine is designed for **reproducible, event-sourced data collection**:
 - Use event logs and turn logs for supervised or RL training
 - Replay games deterministically using stored events
 - Analyze agent behavior and strategy effectiveness
----
-
-For more details, see `liars_dice_plan.md`.
-
