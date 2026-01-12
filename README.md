@@ -316,19 +316,27 @@ Train the PPO agent through curriculum learning or against specific opponents:
     - Stage 14-21: Specialized strategies (480k steps)
     - Stage 22: Bayesian agent (100k steps)
     - Stage 23: Nash/CFR agent (150k steps)
-    - Stage 24+: Self-play (optional)
+    - Stage 24+: League-based self-play (optional)
     
     **Auto-Resume:** Curriculum training automatically continues from existing model if found.
+    
+    **League-Based Self-Play:**
+    When enabled with `--self-play`, training uses a league approach inspired by AlphaStar:
+    - Each iteration, the agent trains against a pool of opponents including ALL curriculum agents + frozen past versions of itself
+    - This prevents catastrophic forgetting by maintaining exposure to diverse strategies
+    - The opponent pool grows each iteration (e.g., iteration 3 = 23 curriculum agents + 3 frozen selves)
+    - Frozen self-play opponents use stochastic policies to prevent positional bias
     
     **Curriculum Options:**
     - `--fresh-start`: Ignore existing model and start from scratch
     - `--timesteps N`: Override timesteps per stage
     - `--stages 5 10 15`: Train only specific stages
-    - `--self-play`: Add self-play after curriculum
+    - `--self-play`: Add league-based self-play after curriculum
+    - `--self-play-iterations N`: Number of self-play iterations (default: 3)
     - `--disable-early-stopping`: Train for full timesteps (no auto-stop)
-    - `--win-rate-threshold 0.90`: Stop when 90% win rate is reached (default: 0.95), for both agents and self play.
+    - `--win-rate-threshold 0.90`: Stop when 90% win rate is reached (default: 0.95), applies to both curriculum and self-play
 
->> Note: Self-play is usually a pretty good agent already, so the expectation might need to be lower than 95% and more towards the 75%
+    **Note:** Self-play league training is challenging since the agent faces a diverse pool. Win rate thresholds around 60-75% may be more realistic than 95% for self-play stages.
 
 3. **Single Opponent Training** (adds to existing agent):
     ```powershell

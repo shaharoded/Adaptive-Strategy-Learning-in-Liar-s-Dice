@@ -202,10 +202,14 @@ def train_curriculum(resume=False, base_timesteps=None, stages=None, enable_earl
 def self_play_training(base_model_path, timesteps=100_000, num_iterations=3,
                        enable_early_stopping=True, win_rate_threshold=0.95):
     """
-    Additional self-play training phase.
+    League-based self-play training phase.
     
-    The agent trains against frozen versions of itself, which helps it discover
-    and exploit weaknesses in its own strategy.
+    The agent trains against a diverse pool of opponents including:
+    - All curriculum agents (to prevent catastrophic forgetting)
+    - Frozen versions of itself from previous iterations
+    
+    This "league" approach helps maintain performance against diverse strategies
+    while improving through self-play.
     
     Args:
         base_model_path: Path to the base model to start from
@@ -215,7 +219,7 @@ def self_play_training(base_model_path, timesteps=100_000, num_iterations=3,
         win_rate_threshold: Win rate threshold for early stopping (default: 0.95)
     """
     print("\n" + "="*80)
-    print("SELF-PLAY TRAINING")
+    print("LEAGUE-BASED SELF-PLAY TRAINING")
     print("="*80 + "\n")
     
     game_config = GameConfig(
@@ -225,7 +229,26 @@ def self_play_training(base_model_path, timesteps=100_000, num_iterations=3,
         ones_wild=False
     )
     
+    # Build league of curriculum opponents (sample from these to prevent forgetting)
+    curriculum = get_curriculum_stages()
+    league_opponents = []
+    
+    print("Building opponent league from curriculum agents...")
+    for opponent_cls, name, _ in curriculum:
+        try:
+            # Test if agent can be instantiated
+            test_agent = opponent_cls()
+            league_opponents.append((opponent_cls, name))
+            print(f"  ✓ Added {name} to league")
+        except UntrainedAgentException:
+            print(f"  ⚠ Skipped {name} (not trained)")
+        except Exception as e:
+            print(f"  ⚠ Skipped {name} ({e})")
+    
+    print(f"\nLeague size: {len(league_opponents)} curriculum agents\n")
+    
     current_path = base_model_path
+    frozen_models = []  # Track frozen self versions
     
     for iteration in range(1, num_iterations + 1):
         print(f"\n{'='*80}")
@@ -237,18 +260,18 @@ def self_play_training(base_model_path, timesteps=100_000, num_iterations=3,
         shutil.copy2(f"{current_path}.zip", f"{frozen_model_path}.zip")
         print(f"Created frozen copy: {frozen_model_path}.zip")
         
-        # Create a frozen opponent class that uses the copied frozen model
-        # IMPORTANT: Use stochastic play (deterministic=False) to avoid first-player advantage
+        # Create a frozen stochastic opponent from current model
         class FrozenSelfAgent(PPOAgent):
+            _frozen_path = frozen_model_path  # Class variable to capture path
+            
             def __init__(self):
-                super().__init__(model_path=frozen_model_path)
+                super().__init__(model_path=self._frozen_path)
             
             def choose_action(self, view):
                 """Override to use stochastic policy for better self-play diversity."""
                 if self.model is None:
                     raise RuntimeError("PPOAgent has no loaded model.")
 
-                # Sync history and prepare observation (same as parent)
                 self._sync_history(view)
                 
                 my_dice = view["my_dice"]
@@ -268,7 +291,7 @@ def self_play_training(base_model_path, timesteps=100_000, num_iterations=3,
                 
                 mask = self._get_action_mask(view)
                 
-                # KEY CHANGE: Use deterministic=False for stochastic self-play
+                # KEY: Use stochastic play for diversity
                 action_idx, _ = self.model.predict(obs, action_masks=mask, deterministic=False)
                 
                 game_action = self._decode_action(action_idx)
@@ -278,10 +301,44 @@ def self_play_training(base_model_path, timesteps=100_000, num_iterations=3,
                 return game_action
         
         FrozenSelfAgent.__name__ = f"FrozenSelf_v{iteration}"
+        frozen_models.append((FrozenSelfAgent, f"FrozenSelf_v{iteration}"))
         
-        # Train against the frozen version, always save to ppo_model.zip
+        # Build complete league: curriculum + all frozen selves
+        complete_league = league_opponents + frozen_models
+        print(f"Training against league of {len(complete_league)} opponents:")
+        print(f"  - {len(league_opponents)} curriculum agents")
+        print(f"  - {len(frozen_models)} frozen self versions\n")
+        
+        # Create a league opponent that randomly samples from the pool
+        import random as py_random
+        
+        class LeagueOpponent:
+            """Opponent that randomly samples from a league of agents each episode."""
+            def __init__(self):
+                self.league = complete_league
+                self.current_agent = None
+                self.current_name = None
+                self._select_opponent()
+            
+            def _select_opponent(self):
+                """Randomly select an opponent from the league."""
+                opponent_cls, name = py_random.choice(self.league)
+                self.current_agent = opponent_cls()
+                self.current_name = name
+            
+            def choose_action(self, view):
+                """Delegate to current opponent."""
+                return self.current_agent.choose_action(view)
+            
+            def reset_for_new_episode(self):
+                """Called at start of each episode to resample opponent."""
+                self._select_opponent()
+        
+        LeagueOpponent.__name__ = f"League_{len(complete_league)}agents"
+        
+        # Train against the league, always save to ppo_model.zip
         saved_path = train_ppo_agent(
-            opponent_cls=FrozenSelfAgent,
+            opponent_cls=LeagueOpponent,
             game_config=game_config,
             load_path=current_path,
             save_name="ppo_model",  # Always overwrite main model
@@ -291,16 +348,22 @@ def self_play_training(base_model_path, timesteps=100_000, num_iterations=3,
             win_rate_threshold=win_rate_threshold
         )
         
-        # Clean up the frozen copy
-        if os.path.exists(f"{frozen_model_path}.zip"):
-            os.remove(f"{frozen_model_path}.zip")
-            print(f"Removed temporary frozen copy: {frozen_model_path}.zip")
+        # Clean up the frozen copy (we keep track of it via the class definition)
+        # Note: We don't delete yet because LeagueOpponent might still reference it
         
         # Update for next iteration
         current_path = saved_path
         print(f"\nSelf-play iteration {iteration} completed. Model updated at: {saved_path}.zip")
     
-    print(f"\nSelf-play training complete. Final model: {current_path}.zip")
+    # Cleanup all frozen copies after training completes
+    print(f"\nCleaning up temporary frozen model copies...")
+    for i in range(1, num_iterations + 1):
+        frozen_path = f"{base_model_path}_frozen_iter{i}.zip"
+        if os.path.exists(frozen_path):
+            os.remove(frozen_path)
+            print(f"  Removed: {frozen_path}")
+    
+    print(f"\nLeague-based self-play training complete. Final model: {current_path}.zip")
 
 
 def main():
