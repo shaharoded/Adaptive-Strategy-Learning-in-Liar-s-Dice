@@ -10,6 +10,7 @@ Usage:
 
 import os
 import sys
+import shutil
 import argparse
 from pathlib import Path
 
@@ -198,7 +199,8 @@ def train_curriculum(resume=False, base_timesteps=None, stages=None, enable_earl
     print("\n")
 
 
-def self_play_training(base_model_path, timesteps=100_000, num_iterations=3):
+def self_play_training(base_model_path, timesteps=100_000, num_iterations=3,
+                       enable_early_stopping=True, win_rate_threshold=0.95):
     """
     Additional self-play training phase.
     
@@ -209,6 +211,8 @@ def self_play_training(base_model_path, timesteps=100_000, num_iterations=3):
         base_model_path: Path to the base model to start from
         timesteps: Timesteps per self-play iteration
         num_iterations: Number of self-play iterations
+        enable_early_stopping: If True, stops when win_rate_threshold is reached
+        win_rate_threshold: Win rate threshold for early stopping (default: 0.95)
     """
     print("\n" + "="*80)
     print("SELF-PLAY TRAINING")
@@ -216,7 +220,7 @@ def self_play_training(base_model_path, timesteps=100_000, num_iterations=3):
     
     game_config = GameConfig(
         num_players=2,
-        dice_per_player=5,
+        total_dice=5,
         faces=(1, 2, 3, 4, 5, 6),
         ones_wild=False
     )
@@ -228,36 +232,40 @@ def self_play_training(base_model_path, timesteps=100_000, num_iterations=3):
         print(f"SELF-PLAY ITERATION {iteration}/{num_iterations}")
         print(f"{'='*80}\n")
         
-        # Create a frozen opponent class that uses the current model
+        # Create a COPY of the frozen model so it doesn't get overwritten during training
+        frozen_model_path = f"{current_path}_frozen_iter{iteration}"
+        shutil.copy2(f"{current_path}.zip", f"{frozen_model_path}.zip")
+        print(f"Created frozen copy: {frozen_model_path}.zip")
+        
+        # Create a frozen opponent class that uses the copied frozen model
         class FrozenSelfAgent(PPOAgent):
             def __init__(self):
-                super().__init__(model_path=current_path)
+                super().__init__(model_path=frozen_model_path)
         
         FrozenSelfAgent.__name__ = f"FrozenSelf_v{iteration}"
         
-        # Train against the frozen version
-        stage_model_name = f"ppo_model_selfplay{iteration}"
+        # Train against the frozen version, always save to ppo_model.zip
         saved_path = train_ppo_agent(
             opponent_cls=FrozenSelfAgent,
             game_config=game_config,
             load_path=current_path,
-            save_name=stage_model_name,
+            save_name="ppo_model",  # Always overwrite main model
             total_timesteps=timesteps,
-            log_interval=10
+            log_interval=10,
+            enable_early_stopping=enable_early_stopping,
+            win_rate_threshold=win_rate_threshold
         )
+        
+        # Clean up the frozen copy
+        if os.path.exists(f"{frozen_model_path}.zip"):
+            os.remove(f"{frozen_model_path}.zip")
+            print(f"Removed temporary frozen copy: {frozen_model_path}.zip")
         
         # Update for next iteration
         current_path = saved_path
-        print(f"\nSelf-play iteration {iteration} completed.")
+        print(f"\nSelf-play iteration {iteration} completed. Model updated at: {saved_path}.zip")
     
-    # Save final self-play model
-    final_dest = base_model_path.replace(".zip", "_selfplay.zip")
-    if not final_dest.endswith(".zip"):
-        final_dest += "_selfplay.zip"
-    
-    import shutil
-    shutil.copy2(current_path + ".zip", final_dest)
-    print(f"\nFinal self-play model saved to: {final_dest}")
+    print(f"\nSelf-play training complete. Final model: {current_path}.zip")
 
 
 def main():
@@ -275,9 +283,9 @@ def main():
     parser.add_argument("--self-play-iterations", type=int, default=3,
                        help="Number of self-play iterations")
     parser.add_argument("--disable-early-stopping", action="store_true",
-                       help="Disable early stopping based on win rate")
+                       help="Disable early stopping based on win rate (applies to both curriculum and self-play)")
     parser.add_argument("--win-rate-threshold", type=float, default=0.95,
-                       help="Win rate threshold for early stopping (default: 0.95)")
+                       help="Win rate threshold for early stopping (default: 0.95, applies to both curriculum and self-play)")
     
     args = parser.parse_args()
     
@@ -296,7 +304,9 @@ def main():
         self_play_training(
             base_model_path=base_path,
             timesteps=args.timesteps or 100_000,
-            num_iterations=args.self_play_iterations
+            num_iterations=args.self_play_iterations,
+            enable_early_stopping=not args.disable_early_stopping,
+            win_rate_threshold=args.win_rate_threshold
         )
 
 
