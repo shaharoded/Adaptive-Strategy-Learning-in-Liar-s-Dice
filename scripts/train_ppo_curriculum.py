@@ -238,9 +238,44 @@ def self_play_training(base_model_path, timesteps=100_000, num_iterations=3,
         print(f"Created frozen copy: {frozen_model_path}.zip")
         
         # Create a frozen opponent class that uses the copied frozen model
+        # IMPORTANT: Use stochastic play (deterministic=False) to avoid first-player advantage
         class FrozenSelfAgent(PPOAgent):
             def __init__(self):
                 super().__init__(model_path=frozen_model_path)
+            
+            def choose_action(self, view):
+                """Override to use stochastic policy for better self-play diversity."""
+                if self.model is None:
+                    raise RuntimeError("PPOAgent has no loaded model.")
+
+                # Sync history and prepare observation (same as parent)
+                self._sync_history(view)
+                
+                my_dice = view["my_dice"]
+                my_hand = {}
+                for die in my_dice:
+                    my_hand[die] = my_hand.get(die, 0) + 1
+                
+                my_dice_count = len(my_dice)
+                public = view["public"]
+                player_id = view.get("player_id", 0)
+                opp_dice_count = sum(c for i, c in enumerate(public.dice_counts) if i != player_id)
+                
+                old_buffer = self.encoder.history_buffer
+                self.encoder.history_buffer = self.history_buffer
+                obs = self.encoder.encode(my_hand, my_dice_count, opp_dice_count)
+                self.encoder.history_buffer = old_buffer
+                
+                mask = self._get_action_mask(view)
+                
+                # KEY CHANGE: Use deterministic=False for stochastic self-play
+                action_idx, _ = self.model.predict(obs, action_masks=mask, deterministic=False)
+                
+                game_action = self._decode_action(action_idx)
+                self._record_action(is_me=True, action=game_action)
+                self.last_bid_on_table = public.last_bid
+                
+                return game_action
         
         FrozenSelfAgent.__name__ = f"FrozenSelf_v{iteration}"
         

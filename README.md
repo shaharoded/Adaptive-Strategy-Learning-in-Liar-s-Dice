@@ -326,7 +326,9 @@ Train the PPO agent through curriculum learning or against specific opponents:
     - `--stages 5 10 15`: Train only specific stages
     - `--self-play`: Add self-play after curriculum
     - `--disable-early-stopping`: Train for full timesteps (no auto-stop)
-    - `--win-rate-threshold 0.90`: Stop when 90% win rate is reached (default: 0.95)
+    - `--win-rate-threshold 0.90`: Stop when 90% win rate is reached (default: 0.95), for both agents and self play.
+
+>> Note: Self-play is usually a pretty good agent already, so the expectation might need to be lower than 95% and more towards the 75%
 
 3. **Single Opponent Training** (adds to existing agent):
     ```powershell

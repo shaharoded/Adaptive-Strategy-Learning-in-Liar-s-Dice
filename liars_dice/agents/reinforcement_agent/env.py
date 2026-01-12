@@ -36,15 +36,18 @@ class LiarsDiceGymEnv(gym.Env):
     """
     metadata = {"render_modes": ["human"], "render_fps": 4}
 
-    def __init__(self, game_config: GameConfig, opponent_agent_cls):
+    def __init__(self, game_config: GameConfig, opponent_agent_cls, randomize_position=True):
         """
         Args:
             game_config: Configuration object (dice count, etc).
             opponent_agent_cls: The class of the opponent (e.g. RandomAgent, CFRAgent).
                                 This agent is instantiated once and reset per round.
+            randomize_position: If True, randomly assigns RL agent to player 0 or 1 each episode.
+                                This helps the agent learn from both first and second player perspectives.
         """
         super().__init__()
         self.cfg = game_config
+        self.randomize_position = randomize_position
         
         # Initialize the Encoder with History
         self.encoder = HistoryObservationEncoder(game_config, history_len=10)
@@ -52,7 +55,7 @@ class LiarsDiceGymEnv(gym.Env):
         # --- Internal Game State ---
         self.engine = GameEngine(self.cfg)
         self.opponent = opponent_agent_cls()
-        self.rl_player_id = 0  # RL agent is always Player 0
+        self.rl_player_id = 0  # Will be randomized in reset() if randomize_position=True
         
         # --- Full Match State (dice elimination) ---
         self.initial_dice_per_player = game_config.total_dice  # total_dice is per-player count
@@ -80,23 +83,30 @@ class LiarsDiceGymEnv(gym.Env):
         1. Resets dice counts for both players to initial values.
         2. Clears engine state.
         3. Clears history buffer.
-        4. If Opponent goes first, simulates until RL Agent's turn.
+        4. Randomizes RL agent position (if enabled).
+        5. If Opponent goes first, simulates until RL Agent's turn.
         """
         super().reset(seed=seed)
         
-        # 1. Reset Match State (dice counts)
+        # 1. Randomize RL agent position (helps learn from both perspectives)
+        if self.randomize_position:
+            self.rl_player_id = np.random.randint(0, 2)  # Randomly 0 or 1
+        else:
+            self.rl_player_id = 0
+        
+        # 2. Reset Match State (dice counts)
         self.rl_agent_dice = self.initial_dice_per_player
         self.opponent_dice = self.initial_dice_per_player
         self.match_winner = None
         
-        # 2. Reset Engine
+        # 3. Reset Engine
         self.engine = GameEngine(self.cfg) 
         self._start_new_round_with_dice_counts()
         
-        # 3. Reset Encoder History
+        # 4. Reset Encoder History
         self.encoder.reset()
         
-        # 4. Handle Opponent Turn (if they are Player 0)
+        # 5. Handle Opponent Turn (if they are Player 0)
         if self.engine.state.public.current_player != self.rl_player_id:
             self._play_opponent_turn_sequence()
             
