@@ -17,6 +17,15 @@ class NashCFRAgent(Agent):
     """
     NashCFRAgent:
     Implements External Sampling Monte Carlo Counterfactual Regret Minimization (MCCFR).
+    Uses static methods to train policies for various dice configurations.
+    During gameplay, selects actions based on precomputed CFR policies.
+    Args:
+        policy_dict (dict): Pretrained policy dictionary mapping info sets to action probabilities.
+                            Allowing to load different policies as long as the policiy is saved in-memory, 
+                            avoiding the to load from disk each time.
+        weights_path (str): Path to load pretrained policy if policy_dict is not provided.
+    
+        NOTE: If both policy_dict and weights_path are None, it will attempt to load from default path (weights/nash_cfr_policy.pkl).
     """
     def __init__(self, policy_dict=None, weights_path=None):
         super().__init__()
@@ -64,7 +73,7 @@ class NashCFRAgent(Agent):
                 q, f = chosen
                 return BidAction(Bid(q, f))
         
-        # Fallback: Random legal action
+        # Fallback: Random legal action (should rarely happen if policy is comprehensive)
         if last_bid is None:
             return BidAction(Bid(1, random.choice(my_dice)))
         for q in range(last_bid.quantity, total_dice + 1):
@@ -85,8 +94,18 @@ class NashCFRAgent(Agent):
                           specific_combinations=None):
         """
         Trains CFR policies for dice count combinations.
+        Each combination is a tuple of dice counts per player (e.g., (2,3) for 2 players with 2 and 3 dice).
+        The policy will define strategies for all players in that configuration, based on game's current state.
         Args:
-            specific_combinations: List of tuples (e.g. [(2,2), (2,3)]) to train ONLY specific configs.
+            num_players (int): Number of players in the game.
+            max_dice (int): Maximum number of dice per player to train up to.
+            faces (tuple): Tuple of valid die faces.
+            iterations (int): Number of CFR iterations per configuration, each iteration performs MCCFR.
+            seed (int): Random seed for reproducibility.
+            verbose (bool): If True, prints progress information.
+            checkpoint_path (str): Path to save intermediate policies. If exists, will load and resume.
+            tensorboard_logdir (str): Directory to save TensorBoard logs. If None, no logging is done.
+            specific_combinations: List of tuples (e.g. [(2,2), (2,3)]) to train ONLY specific configs. Allows resuming, targeted training and parallelization.
         """
         if specific_combinations:
             target_configs = specific_combinations
@@ -149,7 +168,24 @@ class NashCFRAgent(Agent):
                         progress_callback=None):
         """
         External Sampling MCCFR (Monte Carlo Counterfactual Regret Minimization).
-        
+        Trains a CFR policy for a specific dice configuration.
+
+        MCCFR is a sampling-based variant of Counterfactual Regret Minimization (CFR),
+        a popular algorithm for solving extensive-form games. Instead of traversing
+        the entire game tree (which can be computationally expensive), MCCFR samples
+        game trajectories to estimate regrets and update strategies. This makes it
+        scalable to large games like Liar's Dice.
+
+        The training process involves:
+        1. Sampling game trajectories based on the current strategy.
+        2. Calculating counterfactual regrets for each decision point (info set).
+        3. Updating the strategy using regret-matching, which biases future decisions
+           toward actions with higher positive regrets.
+        4. Repeating the process for a specified number of iterations.
+
+        The goal of MCCFR is to minimize regret over time, leading to a Nash equilibrium
+        strategy where no player can unilaterally improve their outcome by deviating.
+
         Args:
             dice_counts (tuple): Tuple containing number of dice for each player (e.g., (2, 2)).
             faces (tuple): Tuple of valid die faces.
@@ -159,7 +195,7 @@ class NashCFRAgent(Agent):
             convergence_threshold (float): Max allowed delta in strategy probabilities to consider converged.
             check_convergence_every (int): Frequency of convergence checks.
             progress_callback (callable, optional): function(iteration, metric_value) called during training.
-            
+
         Returns:
             tuple: (final_policy_dict, metrics_dict)
         """
@@ -173,15 +209,27 @@ class NashCFRAgent(Agent):
         # Precompute dice combinations
         dice_combos = [[tuple(sorted(c)) for c in combinations_with_replacement(faces, d)] for d in dice_counts]
         
-        def evaluate_terminal(all_dice, last_bid, caller_id):
-            """Returns utility for caller: 1 if bid calls a liar correctly, -1 if bid exists."""
+        def evaluate_terminal(all_dice, last_bid):
+            """
+            Returns utility for caller: 1 if bid calls a liar correctly, -1 if bid exists.
+            The CFR function will handle perspective switching.
+            """
             if last_bid is None: return 0
             match_count = sum(d.count(last_bid.face) for d in all_dice)
             # If bid is true (count >= quantity), caller loses (-1). If false, caller wins (1).
             return -1 if match_count >= last_bid.quantity else 1
 
         def get_strategy(info_set, actions):
-            """Computes regret-matching strategy for an info set."""
+            """
+            Computes the regret-matching strategy for a given information set.
+
+            Args:
+                info_set (tuple): The current information set (e.g., dice configuration, last bid).
+                actions (list): List of legal actions available in the current state.
+
+            Returns:
+                dict: A dictionary mapping actions to probabilities based on positive regrets.
+            """
             strat = {}
             pos_regrets = {a: max(regrets[info_set][a], 0) for a in actions}
             sum_pos = sum(pos_regrets.values())
@@ -192,17 +240,31 @@ class NashCFRAgent(Agent):
             return strat
 
         def cfr(all_dice, last_bid, current_player, history, traversing_player):
-            """Recursive CFR function."""
+            """
+            Recursive Counterfactual Regret Minimization (CFR) function.
+
+            This function traverses the game tree, updating regrets and strategies for the traversing player.
+
+            Args:
+                all_dice (list): List of dice rolls for all players.
+                last_bid (Bid or None): The last bid made in the game, or None if no bid has been made.
+                current_player (int): The ID of the player whose turn it is.
+                history (list): List of actions taken so far in the game.
+                traversing_player (int): The ID of the player for whom regrets and strategies are being updated.
+
+            Returns:
+                float: The utility of the game state for the traversing player.
+            """
             # 1. Terminal Check
             if history and history[-1] == "call_liar":
                 caller = 1 - current_player # Previous player called
-                util = evaluate_terminal(all_dice, last_bid, caller)
+                util = evaluate_terminal(all_dice, last_bid)
                 # Utility is relative to traversing_player
                 return util if traversing_player == caller else -util
 
             # 2. Info Set
             my_dice = all_dice[current_player]
-            info_set = NashCFRAgent.encode_info_set(my_dice, last_bid, faces)
+            info_set = NashCFRAgent.encode_info_set(my_dice, last_bid)
             actions = NashCFRAgent.legal_actions(last_bid, faces, total_dice)
             strat = get_strategy(info_set, actions)
 
@@ -215,7 +277,7 @@ class NashCFRAgent(Agent):
                     strategy_sum[info_set][a] += strat[a] # Update average strategy
                     
                     if a == "call_liar":
-                        util[a] = evaluate_terminal(all_dice, last_bid, current_player)
+                        util[a] = evaluate_terminal(all_dice, last_bid)
                     else:
                         next_bid = Bid(a[0], a[1])
                         util[a] = cfr(all_dice, next_bid, 1-current_player, history + [a], traversing_player)
@@ -232,7 +294,7 @@ class NashCFRAgent(Agent):
                 chosen = random.choices(actions, weights=probs, k=1)[0]
                 
                 if chosen == "call_liar":
-                    util = evaluate_terminal(all_dice, last_bid, current_player)
+                    util = evaluate_terminal(all_dice, last_bid)
                     return -util # traversing_player is NOT caller
                 else:
                     next_bid = Bid(chosen[0], chosen[1])
@@ -301,7 +363,6 @@ class NashCFRAgent(Agent):
                     progress_callback(it + 1, max_delta)
                     
                 if max_delta < convergence_threshold:
-                    # print(f"Converged at {it+1}", flush=True) # Worker script handles printing
                     converged = True
                     break
 
@@ -316,12 +377,18 @@ class NashCFRAgent(Agent):
         return final_policy, metrics
 
     @staticmethod
-    def encode_info_set(my_dice, last_bid, faces):
+    def encode_info_set(my_dice, last_bid):
+        """
+        Encodes the information set for the current player based on their dice and the last bid.
+        """
         if last_bid is None: return (tuple(sorted(my_dice)), None, None)
         return (tuple(sorted(my_dice)), last_bid.quantity, last_bid.face)
 
     @staticmethod
     def legal_actions(last_bid, faces, total_dice):
+        """
+        Generates a list of legal actions given the last bid, possible faces, and total dice.
+        """
         actions = []
         if last_bid is None:
             for f in faces: actions.append((1, f))
@@ -335,11 +402,17 @@ class NashCFRAgent(Agent):
 
     @staticmethod
     def save_policy_dict(policy_dict, path):
+        """
+        Saves the policy dictionary to the specified path.
+        """
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "wb") as f: pickle.dump(policy_dict, f)
 
     @staticmethod
     def load_policy_dict(path):
+        """
+        Loads the policy dictionary from the specified path.
+        """
         with open(path, "rb") as f:
             data = pickle.load(f)
         return data['policies'] if isinstance(data, dict) and 'policies' in data else data
