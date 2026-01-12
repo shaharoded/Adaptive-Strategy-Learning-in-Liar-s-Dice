@@ -46,7 +46,7 @@ class PPOAgent(Agent):
         # Note: We don't have game config yet (choose_action receives view later)
         # We assume standard 5 dice for now or set it on first call
         self.total_dice = 5 
-        self.encoder = HistoryObservationEncoder(total_dice=self.total_dice, history_len=TRAINING_CONFIG["history_length"])
+        self.encoder = HistoryObservationEncoder(total_dice=self.total_dice, history_len=MODEL_CONFIG["history_length"])
 
     def choose_action(self, view):
         if self.model is None:

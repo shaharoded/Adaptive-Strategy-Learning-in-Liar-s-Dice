@@ -27,8 +27,26 @@ The engine models the abstract game of Liar's Dice, allowing you to:
 ## Requirements
 
 - Python 3.8+
-- torch (optional)
-- tensorboard (optional)
+- numpy
+- gymnasium
+- stable-baselines3
+- sb3-contrib
+- torch (PyTorch) — required for PPO (inference and training) and used by some training utilities (e.g., TensorBoard helper). Install CPU-only or CUDA-enabled builds as appropriate.
+- tensorboard
+- pandas (for data export/analysis)
+- matplotlib (optional, for plotting)
+- rich, tqdm (used by training scripts for progress output)
+
+Install common packages with pip:
+
+```powershell
+pip install numpy gymnasium stable-baselines3 sb3-contrib torch tensorboard pandas matplotlib rich tqdm
+```
+
+Notes:
+- `torch` is required to load and run the PPO model (stable-baselines3/sb3_contrib use PyTorch). It is also imported by the Nash/CFR training utilities for TensorBoard logging in this repository, so `torch` must be present to import those modules as written.
+- If you only want to run the core engine and rule-based agents (no RL), you can omit `stable-baselines3`, `sb3-contrib`, and `torch`.
+- For GPU acceleration, install a CUDA-enabled PyTorch build following the instructions at https://pytorch.org/.
 
 ## Installation
 
@@ -367,7 +385,7 @@ agent = PPOAgent()  # Loads default model
 - Training uses full match simulation with dice elimination (realistic gameplay)
 - Untrained agents (Nash/CFR or PPO) are automatically skipped during curriculum training
 - Both agents raise `UntrainedAgentException` if model files are missing
-- Training checkpoints are saved every 10k steps for recovery
+Training artifacts: the curriculum training overwrites `ppo_model.zip` each stage (no per-stage files), and final self-play artifacts are saved with `_selfplay` suffix when used. If you require periodic checkpoints, enable or add a `CheckpointCallback` in `liars_dice/agents/ppo_agent.py` or run training with external model-saving scripts.
 
 ---
 
@@ -444,23 +462,40 @@ For detailed UI usage, see the **User Interfaces** section above.
 
 ### 4. Collecting Data
 
-- **Events**: Every action, dice roll, and round outcome is recorded as an event (see `engine.get_events()` and `persistence/recorder.py`).
-- **Turn Log**: Full state snapshots after each action are stored in `engine.turn_log`.
-- **Persistence**: Use `InMemoryRecorder` or extend with file/DB recorders for long-term storage.
+Data is persisted to two CSV outputs by default when running the scripts and UIs:
 
-#### What is Collected?
-- All dice rolls (per player, per round)
-- Every bid and action (with player, bid details)
-- Calls of "liar" and round outcomes (winner, loser, revealed dice)
-- Full state transitions (for replay or training)
+- `data/game_summary.csv` — one line per completed game/match
+- `data/game_trajectory.csv` — one line per event/action within games (turn-level)
 
-#### Where is it Collected?
-- In-memory: `engine._events`, `engine.turn_log`, and via `InMemoryRecorder`
-- Extendable: Implement custom recorders in `liars_dice/persistence/recorder.py`
+These files follow the headers defined in `liars_dice/persistence/csv_io.py`:
 
-## Data for Training & Analysis
+- Summary columns (`liars_dice/persistence/csv_io.SUMMARY_HEADER`):
+    - `game_id`, `game_index`, `timestamp`, `agent0`, `agent1`, `winner`, `loser`,
+    - `steps`, `bids`, `calls`, `bluffs_called`, `error`, `end_reason`,
+    - `starting_dice_per_player`, `rounds_played`
 
-The engine is designed for **reproducible, event-sourced data collection**:
-- Use event logs and turn logs for supervised or RL training
-- Replay games deterministically using stored events
-- Analyze agent behavior and strategy effectiveness
+- Trajectory columns (`liars_dice/persistence/csv_io.TRAJECTORY_HEADER`):
+    - `game_id`, `round`, `event_type`, `turn_index`, `player`, `player_type`,
+    - `payload`, `timestamp`, `state`, `action`, `reward`
+
+How to interpret these files:
+
+- `game_summary.csv` provides match-level / game-level metadata and aggregated counts (e.g., number of bids/calls, winner/loser, rounds played).
+- `game_trajectory.csv` contains a complete, ordered event stream for each game. Each row is a single in-round event (bid, call, dice reveal, etc.) with a `payload` and `state` column that capture the event-specific data and a compact state snapshot useful for replay or supervised learning.
+
+Where the data is written from code:
+
+- The CSV helpers live in `liars_dice/persistence/csv_io.py` (functions `append_row_to_csv`, `append_rows_to_csv`).
+- Higher-level recorders and adapters (for in-memory or file recording) are implemented under `liars_dice/persistence/` and the game scripts call these utilities when a game or round completes.
+
+If you need a different format (JSON, database, Parquet), replace or extend the recorder in `liars_dice/persistence/recorder.py` to emit the desired outputs.
+
+Example: inspect current headers programmatically:
+
+```python
+from liars_dice.persistence.csv_io import get_summary_header, get_trajectory_header
+print(get_summary_header())
+print(get_trajectory_header())
+```
+
+Note: CSV schema may evolve; prefer using the helper functions above to get authoritative headers when ingesting the files.
