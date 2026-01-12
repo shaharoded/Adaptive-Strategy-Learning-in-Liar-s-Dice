@@ -54,10 +54,17 @@ class LiarsDiceGymEnv(gym.Env):
         self.opponent = opponent_agent_cls()
         self.rl_player_id = 0  # RL agent is always Player 0
         
+        # --- Full Match State (dice elimination) ---
+        self.initial_dice_per_player = game_config.total_dice  # total_dice is per-player count
+        self.rl_agent_dice = self.initial_dice_per_player
+        self.opponent_dice = self.initial_dice_per_player
+        self.match_winner = None  # Track winner for full match
+        
         # --- Action Space Setup ---
         # 0 = Call Liar
         # 1..N = Bids (Flattened)
-        self.max_bid_quantity = self.cfg.total_dice + 2 
+        # Max bid = total dice in game (num_players * dice_per_player)
+        self.max_bid_quantity = self.cfg.total_dice * self.cfg.num_players 
         self.num_faces = 6
         self.n_bids = self.max_bid_quantity * self.num_faces
         self.action_space = spaces.Discrete(1 + self.n_bids)
@@ -69,25 +76,38 @@ class LiarsDiceGymEnv(gym.Env):
 
     def reset(self, seed=None, options=None):
         """
-        Resets the environment for a new round.
-        1. Clears engine state.
-        2. Clears history buffer.
-        3. If Opponent goes first, simulates until RL Agent's turn.
+        Resets the environment for a new FULL MATCH (not just a round).
+        1. Resets dice counts for both players to initial values.
+        2. Clears engine state.
+        3. Clears history buffer.
+        4. If Opponent goes first, simulates until RL Agent's turn.
         """
         super().reset(seed=seed)
         
-        # 1. Reset Engine
-        self.engine = GameEngine(self.cfg) 
-        self.engine.start_new_round()
+        # 1. Reset Match State (dice counts)
+        self.rl_agent_dice = self.initial_dice_per_player
+        self.opponent_dice = self.initial_dice_per_player
+        self.match_winner = None
         
-        # 2. Reset Encoder History
+        # 2. Reset Engine
+        self.engine = GameEngine(self.cfg) 
+        self._start_new_round_with_dice_counts()
+        
+        # 3. Reset Encoder History
         self.encoder.reset()
         
-        # 3. Handle Opponent Turn (if they are Player 0)
+        # 4. Handle Opponent Turn (if they are Player 0)
         if self.engine.state.public.current_player != self.rl_player_id:
             self._play_opponent_turn_sequence()
             
         return self._get_obs(), self._get_info()
+    
+    def _start_new_round_with_dice_counts(self):
+        """Start a new round with current dice counts from match state."""
+        # Update player dice counts based on match state
+        self.engine.state.players[0].num_dice = self.rl_agent_dice
+        self.engine.state.players[1].num_dice = self.opponent_dice
+        self.engine.start_new_round()
 
     def get_action_mask(self):
         """
@@ -125,22 +145,55 @@ class LiarsDiceGymEnv(gym.Env):
             
         except IllegalMoveError:
             # Safety Net: Ideally MaskablePPO prevents this. 
-            # If it happens, we end the round with a penalty.
+            # If it happens, we end the match with a penalty.
             total_reward = -10.0 
             terminated = True
             info = self._get_info()
             info['error'] = "IllegalMove"
             return self._get_obs(), total_reward, terminated, truncated, info
 
-        # 2. If game is not over, Play Opponent Sequence
+        # 2. If round is not over, Play Opponent Sequence
         if not self.engine.is_terminal():
             opp_reward = self._play_opponent_turn_sequence()
             total_reward += opp_reward
 
-        # 3. Check Termination
-        terminated = self.engine.is_terminal()
+        # 3. Handle Round End - Dice Elimination
+        if self.engine.is_terminal():
+            round_loser = self.engine.state.public.loser
+            
+            # Update match state: loser loses a die
+            if round_loser == self.rl_player_id:
+                self.rl_agent_dice -= 1
+            else:
+                self.opponent_dice -= 1
+            
+            # Check if match is over (someone has 0 dice)
+            if self.rl_agent_dice == 0:
+                self.match_winner = 1  # Opponent wins
+                total_reward += -5.0  # Large penalty for losing the match
+                terminated = True
+            elif self.opponent_dice == 0:
+                self.match_winner = 0  # RL agent wins
+                total_reward += 5.0  # Large reward for winning the match
+                terminated = True
+            else:
+                # Match continues - start a new round with reduced dice
+                self.encoder.reset()  # Clear history for new round
+                self._start_new_round_with_dice_counts()
+                
+                # If opponent goes first in the new round, simulate their turn
+                if self.engine.state.public.current_player != self.rl_player_id:
+                    opp_reward = self._play_opponent_turn_sequence()
+                    total_reward += opp_reward
         
-        return self._get_obs(), total_reward, terminated, truncated, self._get_info()
+        # 4. Final termination check
+        terminated = (self.match_winner is not None)
+        
+        info = self._get_info()
+        if terminated and self.match_winner is not None:
+            info['match_winner'] = self.match_winner
+        
+        return self._get_obs(), total_reward, terminated, truncated, info
 
     def _play_opponent_turn_sequence(self):
         """

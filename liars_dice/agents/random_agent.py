@@ -90,13 +90,41 @@ class RandomAgent(Agent):
             return CallLiarAction()
 
         # Otherwise make a raise
-        q = min(last.quantity + self.raise_amount, max_qty)
-        if self.allow_different_face:
-            # Prefer keeping same face, but allow switching sometimes
-            f = last.face if self.rng.random() < self.prob_keep_same_face else self.rng.randint(1, 6)
+        # Ensure the new bid is always higher per game rules (quantity then face)
+        new_q = last.quantity + self.raise_amount
+        
+        # Check if we can make any legal higher bid
+        if last.quantity >= max_qty and last.face >= 6:
+            # No higher bid possible - must call liar
+            return CallLiarAction()
+        
+        if self.allow_different_face and self.rng.random() > self.prob_keep_same_face:
+            # Try to switch face
+            if new_q <= max_qty:
+                # Can increase quantity, pick any face
+                q = new_q
+                f = self.rng.randint(1, 6)
+            else:
+                # At max quantity, must increase face
+                q = max_qty
+                if last.face < 6:
+                    f = self.rng.randint(last.face + 1, 6)
+                else:
+                    # Can't increase face, go back to increasing quantity with same face
+                    q = min(new_q, max_qty)
+                    f = last.face
         else:
+            # Keep same face, increase quantity
+            q = min(new_q, max_qty)
             f = last.face
-        return BidAction(Bid(q, f))
+        
+        # Final validation: ensure bid is actually higher
+        proposed_bid = Bid(q, f)
+        if not proposed_bid.is_higher_than(last):
+            # If we couldn't create a higher bid, call liar instead
+            return CallLiarAction()
+        
+        return BidAction(proposed_bid)
 
 
 # Example subclasses for different personalities

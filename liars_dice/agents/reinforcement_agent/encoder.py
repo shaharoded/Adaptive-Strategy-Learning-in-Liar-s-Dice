@@ -23,15 +23,19 @@ class HistoryObservationEncoder:
         # Support both game_config object and direct total_dice parameter
         if game_config is not None:
             self.max_dice = game_config.total_dice if hasattr(game_config, 'total_dice') else 5
+            self.num_players = game_config.num_players if hasattr(game_config, 'num_players') else 2
         elif total_dice is not None:
             self.max_dice = total_dice
+            self.num_players = 2  # Default fallback
         else:
             self.max_dice = 5  # Default fallback
+            self.num_players = 2  # Default fallback
             
         self.history_len = history_len
         
         # --- Normalization Constants ---
-        self.max_bid_qty = self.max_dice + 5 
+        # Max bid = total dice in game (num_players * dice_per_player)
+        self.max_bid_qty = self.max_dice * self.num_players  # Must match env.py action space 
         
         # --- Dimensions ---
         # 1. My Hand: 6 faces

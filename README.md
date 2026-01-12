@@ -271,14 +271,14 @@ The agent learns through **curriculum training**: starting with simple opponents
 
 #### Training
 
-Train the PPO agent through curriculum learning against all available agents:
+Train the PPO agent through curriculum learning or against specific opponents:
 
 1. **Install requirements**:
     ```powershell
     pip install sb3-contrib tensorboard gymnasium
     ```
 
-2. **Run curriculum training**:
+2. **Full Curriculum Training** (recommended for best results):
     ```powershell
     python scripts/train_ppo_curriculum.py
     ```
@@ -292,13 +292,52 @@ Train the PPO agent through curriculum learning against all available agents:
     - Stage 23: Nash/CFR agent (150k steps)
     - Stage 24+: Self-play (optional)
     
-    **Options:**
+    **Curriculum Options:**
     - `--resume`: Continue from last checkpoint
     - `--timesteps N`: Override timesteps per stage
     - `--stages 5 10 15`: Train only specific stages
     - `--self-play`: Add self-play after curriculum
+    - `--disable-early-stopping`: Train for full timesteps (no auto-stop)
+    - `--win-rate-threshold 0.90`: Stop when 90% win rate is reached (default: 0.95)
 
-3. **Monitor training**:
+3. **Single Opponent Training** (adds to existing agent):
+    ```powershell
+    python scripts/train_ppo_single.py --opponent random --timesteps 100000
+    ```
+    
+    Train against a specific opponent. Automatically continues from existing model if found (acts like adding a curriculum stage).
+    
+    **Available Opponents:**
+    - `random`, `cautious`, `aggressive` - Random agents
+    - `conservative`, `aggressive_heur`, `min_raise`, `max_raise` - Simple heuristics
+    - `prob_min`, `prob_max`, `mirror`, `max_count` - Probability-based
+    - `random_face`, `safe_face`, `bluffing`, `threshold` - Specialized
+    - `bayesian` - Bayesian inference agent
+    - `nash_cfr` - Game-theoretic optimal agent
+    
+    **Single Training Options:**
+    - `--timesteps N`: Number of training steps (default: 100,000)
+    - `--win-rate-threshold 0.90`: Stop at 90% win rate (default: 0.95)
+    - `--disable-early-stopping`: Train for full timesteps
+    - `--fresh-start`: Ignore existing model and start from scratch
+    - `--model-name custom_model`: Use custom model name (default: ppo_model)
+    
+    **Examples:**
+    ```powershell
+    # Train against Random agent with early stopping at 90% win rate
+    python scripts/train_ppo_single.py --opponent random --timesteps 100000 --win-rate-threshold 0.90
+    
+    # Continue training against Bayesian agent (enhances existing model)
+    python scripts/train_ppo_single.py --opponent bayesian --timesteps 150000
+    
+    # Train against Nash agent for full timesteps (no early stopping)
+    python scripts/train_ppo_single.py --opponent nash_cfr --timesteps 200000 --disable-early-stopping
+    
+    # Start fresh against a specific opponent
+    python scripts/train_ppo_single.py --opponent conservative --timesteps 50000 --fresh-start
+    ```
+
+4. **Monitor training**:
     ```powershell
     tensorboard --logdir=./runs/ppo_training/
     ```
@@ -306,22 +345,24 @@ Train the PPO agent through curriculum learning against all available agents:
     - Episode rewards (convergence indicator)
     - Policy/value losses
     - Exploration metrics (entropy)
-    - Win rates against each opponent
+    - Win rates against each opponent (updated every 100 matches)
 
-4. **Resume training** (for curriculum learning):
-    ```powershell
-    python scripts/train_ppo_curriculum.py --resume --timesteps 50000
-    ```
-    
-    The agent automatically loads the last saved model and continues training.
+5. **Training Features**:
+    - **Dice Elimination**: Matches play with full dice elimination (loser loses 1 die per round)
+    - **Early Stopping**: Automatically stops when target win rate is achieved
+    - **Auto-Resume**: Single opponent training automatically continues from existing model
+    - **Curriculum Continuity**: Each stage builds on previous learning
 
-**Trained models** are saved to `liars_dice/agents/weights/` and can be loaded with:
+**Trained models** are saved to `liars_dice/agents/weights/ppo_model.zip` and can be loaded with:
 ```python
 from liars_dice.agents.ppo_agent import PPOAgent
 agent = PPOAgent()  # Loads default model
 ```
 
 **Notes:**
+- Single opponent training automatically continues from existing model (like adding curriculum stages)
+- Both curriculum and single training support early stopping based on win rate
+- Training uses full match simulation with dice elimination (realistic gameplay)
 - Untrained agents (Nash/CFR or PPO) are automatically skipped during curriculum training
 - Both agents raise `UntrainedAgentException` if model files are missing
 - Training checkpoints are saved every 10k steps for recovery

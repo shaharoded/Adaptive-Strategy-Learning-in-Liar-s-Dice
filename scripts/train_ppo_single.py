@@ -56,43 +56,52 @@ def main():
                        help="Opponent agent type")
     parser.add_argument("--timesteps", type=int, default=100_000,
                        help="Number of training timesteps")
-    parser.add_argument("--resume", action="store_true",
-                       help="Resume training from existing checkpoint")
     parser.add_argument("--model-name", type=str, default=None,
-                       help="Custom model name (default: ppo_model_<opponent>)")
+                       help="Custom model name (default: ppo_model)")
     parser.add_argument("--num-players", type=int, default=2,
                        help="Number of players")
     parser.add_argument("--dice-per-player", type=int, default=5,
                        help="Number of dice per player")
     parser.add_argument("--ones-wild", action="store_true",
                        help="Enable ones_wild rule")
+    parser.add_argument("--disable-early-stopping", action="store_true",
+                       help="Disable early stopping based on win rate")
+    parser.add_argument("--win-rate-threshold", type=float, default=0.95,
+                       help="Win rate threshold for early stopping (default: 0.95)")
+    parser.add_argument("--fresh-start", action="store_true",
+                       help="Start training from scratch (ignore existing model)")
     
     args = parser.parse_args()
     
     # Get opponent class
     opponent_cls = OPPONENTS[args.opponent]
     
-    # Setup model name
-    model_name = args.model_name or f"ppo_model_{args.opponent}"
+    # Always use the main model name (or custom if specified)
+    # This ensures training against different opponents updates the same master agent
+    model_name = args.model_name or "ppo_model"
     
     # Setup game configuration
     game_config = GameConfig(
         num_players=args.num_players,
-        dice_per_player=args.dice_per_player,
+        total_dice=args.dice_per_player,  # total_dice is per-player count
         faces=(1, 2, 3, 4, 5, 6),
         ones_wild=args.ones_wild
     )
     
-    # Determine load path for resuming
+    # Always try to load existing model (acts like continuing curriculum)
+    # This way, training against a new opponent adds to the agent's knowledge
+    base_path = f"./liars_dice/agents/weights/{model_name}"
     load_path = None
-    if args.resume:
-        base_path = f"./liars_dice/agents/weights/{model_name}"
-        if os.path.exists(base_path + ".zip"):
-            load_path = base_path
-            print(f"Resuming training from: {load_path}.zip")
+    
+    if not args.fresh_start and os.path.exists(base_path + ".zip"):
+        load_path = base_path
+        print(f"Found existing model - will continue training from: {load_path}.zip")
+        print(f"Training against {args.opponent} will enhance the existing agent\\n")
+    else:
+        if args.fresh_start:
+            print(f"Fresh start requested - starting from scratch\\n")
         else:
-            print(f"Warning: Resume requested but model not found at {base_path}.zip")
-            print("Starting fresh training...")
+            print(f"No existing model found - starting fresh training\\n")
     
     print("\n" + "="*80)
     print("PPO TRAINING - SINGLE OPPONENT")
@@ -102,8 +111,11 @@ def main():
     print(f"  Timesteps: {args.timesteps:,}")
     print(f"  Game: {args.num_players} players, {args.dice_per_player} dice each")
     print(f"  Ones Wild: {args.ones_wild}")
-    print(f"  Model Name: {model_name}")
-    print(f"  Resume: {args.resume}")
+    print(f"  Model: {model_name}")
+    print(f"  Continuing from existing: {load_path is not None}")
+    print(f"  Early Stopping: {not args.disable_early_stopping}")
+    if not args.disable_early_stopping:
+        print(f"  Win Rate Threshold: {args.win_rate_threshold:.0%}")
     print()
     
     # Train
@@ -113,17 +125,20 @@ def main():
         load_path=load_path,
         save_name=model_name,
         total_timesteps=args.timesteps,
-        log_interval=10
+        log_interval=10,
+        enable_early_stopping=not args.disable_early_stopping,
+        win_rate_threshold=args.win_rate_threshold
     )
     
     print("\n" + "="*80)
     print("TRAINING COMPLETE!")
     print("="*80 + "\n")
     print(f"Model saved to: {saved_path}.zip")
+    print(f"\nThe agent has been trained/enhanced against {opponent_cls.__name__}")
     print("\nTo visualize training progress:")
     print("  tensorboard --logdir=./runs/ppo_training/")
-    print("\nTo resume training:")
-    print(f"  python scripts/train_ppo_single.py --opponent {args.opponent} --resume --timesteps <more_steps>")
+    print("\nTo train against another opponent (adds to curriculum):")
+    print(f"  python scripts/train_ppo_single.py --opponent <opponent_name> --timesteps <steps>")
     print()
 
 

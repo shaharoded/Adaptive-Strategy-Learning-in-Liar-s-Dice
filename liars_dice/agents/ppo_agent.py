@@ -1,6 +1,7 @@
 import os
 import numpy as np
 from sb3_contrib import MaskablePPO
+from sb3_contrib.common.wrappers import ActionMasker
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.callbacks import CheckpointCallback, BaseCallback
 from stable_baselines3.common.logger import configure
@@ -55,7 +56,7 @@ class PPOAgent(Agent):
         self._sync_history(view)
 
         # 2. Prepare Data for Encoder
-        # View is a dict with keys: player_id, public, my_dice, config
+        # View is a dict with keys: player_id (optional), public, my_dice, config
         my_dice = view["my_dice"]  # tuple of dice values
         my_hand = {}
         for die in my_dice:
@@ -65,7 +66,7 @@ class PPOAgent(Agent):
         
         # Get opponent dice count from public state
         public = view["public"]
-        player_id = view["player_id"]
+        player_id = view.get("player_id", 0)  # Default to 0 if not provided
         opp_dice_count = sum(c for i, c in enumerate(public.dice_counts) if i != player_id)
         
         # 3. Encode - Use the history buffer maintained by this agent
@@ -144,7 +145,7 @@ class PPOAgent(Agent):
                 idx = 1 + (q-1)*6 + (f-1)
                 if idx < n_actions:
                     cand = Bid(q, f)
-                    if curr is None or cand > curr:
+                    if curr is None or cand.is_higher_than(curr):
                         mask[idx] = True
         return mask
 
@@ -191,10 +192,66 @@ class RewardLoggingCallback(BaseCallback):
         return True
 
 
+class WinRateCallback(BaseCallback):
+    """
+    Custom callback to track win rate and stop training when threshold is reached.
+    
+    Tracks wins over the last N episodes and stops training when win rate exceeds threshold.
+    """
+    def __init__(self, win_rate_threshold=0.95, window_size=100, verbose=1, print_freq=100):
+        super().__init__(verbose)
+        self.win_rate_threshold = win_rate_threshold
+        self.window_size = window_size
+        self.print_freq = print_freq  # Print every N episodes
+        self.episode_outcomes = []  # Store 1 for win, 0 for loss
+        self.total_episodes = 0
+        
+    def _on_step(self) -> bool:
+        # Check if episode is done
+        if self.locals.get("dones")[0]:
+            info = self.locals.get("infos")[0]
+            
+            # Check if match_winner is in info (indicates match completion with dice elimination)
+            if "match_winner" in info:
+                # match_winner == 0 means RL agent won
+                did_win = 1 if info["match_winner"] == 0 else 0
+                self.episode_outcomes.append(did_win)
+                self.total_episodes += 1
+                
+                # Keep only the last window_size episodes
+                if len(self.episode_outcomes) > self.window_size:
+                    self.episode_outcomes.pop(0)
+                
+                # Calculate win rate over the window
+                if len(self.episode_outcomes) >= self.window_size:
+                    win_rate = sum(self.episode_outcomes) / len(self.episode_outcomes)
+                    
+                    # Log to TensorBoard (every episode)
+                    self.logger.record("performance/win_rate_100", win_rate)
+                    self.logger.record("performance/total_matches", self.total_episodes)
+                    
+                    # Print to console only every print_freq episodes
+                    if self.verbose >= 1 and self.total_episodes % self.print_freq == 0:
+                        print(f"[Win Rate] Matches: {self.total_episodes:,} | "
+                              f"Win Rate (last {self.window_size}): {win_rate:.1%}")
+                    
+                    # Check if threshold is reached
+                    if win_rate >= self.win_rate_threshold:
+                        if self.verbose >= 1:
+                            print(f"\\n{'='*60}")
+                            print(f"🎯 TARGET ACHIEVED! Win rate {win_rate:.1%} >= {self.win_rate_threshold:.0%}")
+                            print(f"Stopping training after {self.total_episodes:,} matches.")
+                            print(f"{'='*60}\\n")
+                        return False  # Stop training
+        
+        return True  # Continue training
+
+
 # --- Training Function ---
 
 def train_ppo_agent(opponent_cls, game_config, load_path=None, save_name="ppo_model", 
-                   total_timesteps=None, log_interval=10):
+                   total_timesteps=None, log_interval=10, enable_early_stopping=True, 
+                   win_rate_threshold=0.95):
     """
     Trains the PPO Agent against a specific opponent class.
     Supports curriculum learning by allowing continued training from a checkpoint.
@@ -206,6 +263,8 @@ def train_ppo_agent(opponent_cls, game_config, load_path=None, save_name="ppo_mo
         save_name: Name for the saved model file.
         total_timesteps: Number of timesteps to train. If None, uses config default.
         log_interval: How often (in episodes) to print training progress.
+        enable_early_stopping: If True, stops when win_rate_threshold is reached.
+        win_rate_threshold: Win rate threshold for early stopping (default: 0.95 = 95%).
     
     Returns:
         str: Path to the saved model.
@@ -213,13 +272,22 @@ def train_ppo_agent(opponent_cls, game_config, load_path=None, save_name="ppo_mo
     opponent_name = opponent_cls.__name__
     print(f"\n{'='*60}", flush=True)
     print(f"Starting Training vs {opponent_name}", flush=True)
+    if enable_early_stopping:
+        print(f"Early stopping enabled: Will stop at {win_rate_threshold:.0%} win rate (last 100 matches)", flush=True)
     print(f"{'='*60}\n", flush=True)
     
     if total_timesteps is None:
         total_timesteps = TRAINING_CONFIG["total_timesteps"]
     
-    # 1. Setup Environment
-    env = Monitor(LiarsDiceGymEnv(game_config, opponent_cls))
+    # 1. Setup Environment with ActionMasker wrapper
+    base_env = LiarsDiceGymEnv(game_config, opponent_cls)
+    
+    # ActionMasker wrapper requires a mask_fn that takes env and returns the mask
+    def mask_fn(env):
+        return env.get_action_mask()
+    
+    env = ActionMasker(base_env, mask_fn)
+    env = Monitor(env)
 
     # 2. Initialize or Load Model
     model_exists = load_path and os.path.exists(load_path + ".zip")
@@ -228,17 +296,18 @@ def train_ppo_agent(opponent_cls, game_config, load_path=None, save_name="ppo_mo
         print(f"Loading existing model from {load_path}.zip...", flush=True)
         print(f"Continuing training for {total_timesteps} more timesteps\n", flush=True)
         model = MaskablePPO.load(load_path, env=env)
-        # Update tensorboard log to include opponent name
-        tb_log_name = f"{save_name}_vs_{opponent_name}"
+        # Use consistent opponent name for TensorBoard organization
+        tb_log_name = opponent_name
         model.tensorboard_log = TRAINING_CONFIG["log_dir"]
     else:
         print("Initializing new PPO model...", flush=True)
         print(f"Training for {total_timesteps} timesteps\n", flush=True)
-        tb_log_name = f"{save_name}_vs_{opponent_name}"
+        # Use opponent name for clean TensorBoard organization
+        tb_log_name = opponent_name
         model = MaskablePPO(
             MODEL_CONFIG["policy_type"],
             env,
-            verbose=1,
+            verbose=0,
             tensorboard_log=TRAINING_CONFIG["log_dir"],
             learning_rate=MODEL_CONFIG["learning_rate"],
             gamma=MODEL_CONFIG["gamma"],
@@ -248,21 +317,26 @@ def train_ppo_agent(opponent_cls, game_config, load_path=None, save_name="ppo_mo
         )
 
     # 3. Setup Callbacks
-    checkpoint_callback = CheckpointCallback(
-        save_freq=TRAINING_CONFIG["save_freq"],
-        save_path=TRAINING_CONFIG["log_dir"],
-        name_prefix=save_name
-    )
+    callbacks = []
     
-    reward_callback = RewardLoggingCallback(verbose=1)
+    # Add win rate callback if early stopping is enabled
+    if enable_early_stopping:
+        win_rate_callback = WinRateCallback(
+            win_rate_threshold=win_rate_threshold,
+            window_size=100,
+            verbose=1,
+            print_freq=100  # Print every 100 matches
+        )
+        callbacks.append(win_rate_callback)
 
     # 4. Train
     print(f"Training against {opponent_name}...", flush=True)
+    print(f"Progress updates every 100 matches. Full stats in TensorBoard.\n", flush=True)
     model.learn(
         total_timesteps=total_timesteps,
-        callback=[checkpoint_callback, reward_callback],
+        callback=callbacks,
         tb_log_name=tb_log_name,
-        reset_num_timesteps=False if model_exists else True,  # Continue timestep counter if resuming
+        reset_num_timesteps=False if model_exists else True,
         progress_bar=True
     )
 

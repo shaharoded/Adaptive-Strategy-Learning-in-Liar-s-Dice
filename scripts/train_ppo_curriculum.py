@@ -97,7 +97,8 @@ def get_curriculum_stages():
     ]
 
 
-def train_curriculum(resume=False, base_timesteps=None, stages=None):
+def train_curriculum(resume=False, base_timesteps=None, stages=None, enable_early_stopping=True,
+                    win_rate_threshold=0.95):
     """
     Execute curriculum training.
     
@@ -105,17 +106,21 @@ def train_curriculum(resume=False, base_timesteps=None, stages=None):
         resume: If True, attempts to resume from the last saved checkpoint
         base_timesteps: Override default timesteps per stage (optional)
         stages: List of specific stage indices to train (optional, trains all if None)
+        enable_early_stopping: If True, stops each stage when win_rate_threshold is reached
+        win_rate_threshold: Win rate threshold for early stopping (default: 0.95 = 95%)
     
     Note: Agents that aren't trained (Nash/CFR) are automatically skipped if UntrainedAgentException is raised.
     """
     print("\n" + "="*80)
     print("PPO CURRICULUM TRAINING")
+    if enable_early_stopping:
+        print(f"Early stopping enabled: Each stage will stop at {win_rate_threshold:.0%} win rate")
     print("="*80 + "\n")
     
     # Setup game configuration
     game_config = GameConfig(
         num_players=2,
-        dice_per_player=5,
+        total_dice=5,  # total_dice is per-player count
         faces=(1, 2, 3, 4, 5, 6),
         ones_wild=False
     )
@@ -130,7 +135,7 @@ def train_curriculum(resume=False, base_timesteps=None, stages=None):
     current_model_path = base_path if resume else None
     
     print(f"Training Configuration:")
-    print(f"  Game: {game_config.num_players} players, {game_config.dice_per_player} dice each")
+    print(f"  Game: {game_config.num_players} players, {game_config.total_dice} dice each")
     print(f"  Curriculum Stages: {len(curriculum)}")
     print(f"  Resume Training: {resume}")
     print(f"  Base Model Path: {base_path}")
@@ -156,7 +161,9 @@ def train_curriculum(resume=False, base_timesteps=None, stages=None):
                 load_path=current_model_path,  # Load from previous stage or None
                 save_name=stage_model_name,
                 total_timesteps=timesteps,
-                log_interval=10
+                log_interval=10,
+                enable_early_stopping=enable_early_stopping,
+                win_rate_threshold=win_rate_threshold
             )
             
             # Update the current model path for the next stage
@@ -272,6 +279,10 @@ def main():
                        help="Run self-play training after curriculum")
     parser.add_argument("--self-play-iterations", type=int, default=3,
                        help="Number of self-play iterations")
+    parser.add_argument("--disable-early-stopping", action="store_true",
+                       help="Disable early stopping based on win rate")
+    parser.add_argument("--win-rate-threshold", type=float, default=0.95,
+                       help="Win rate threshold for early stopping (default: 0.95)")
     
     args = parser.parse_args()
     
@@ -279,7 +290,9 @@ def main():
     train_curriculum(
         resume=args.resume,
         base_timesteps=args.timesteps,
-        stages=args.stages
+        stages=args.stages,
+        enable_early_stopping=not args.disable_early_stopping,
+        win_rate_threshold=args.win_rate_threshold
     )
     
     # Optionally run self-play
