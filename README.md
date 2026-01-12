@@ -200,27 +200,30 @@ The engine includes two sophisticated AI agents that learn optimal strategies th
 
 ### Nash/CFR Agent (Game-Theoretic Equilibrium)
 
-The **NashCFRAgent** uses **Counterfactual Regret Minimization (CFR)** to compute Nash equilibrium strategies for Liar's Dice.
+The **NashCFRAgent** in this codebase is implemented using a sampling-based variant of Counterfactual Regret Minimization (CFR): External-Sampling Monte Carlo CFR (commonly shortened to MCCFR). MCCFR replaces full game-tree traversals with Monte Carlo sampling of trajectories to estimate counterfactual regrets, which makes it practical for the larger extensive-form game trees that arise in Liar's Dice.
 
-#### Theory
+- **Nash equilibrium:** a strategy profile (possibly mixed) where no player can increase their expected payoff by unilaterally deviating. In two-player zero-sum games like Liar's Dice, reaching a Nash equilibrium means the strategy is unexploitable in expectation against any opponent.
+- **Counterfactual regret:** for a given information set and action, counterfactual regret measures the (expected) difference in payoff had the player chosen that action every time the information set was reached, compared to the actions actually taken. CFR algorithms iteratively accumulate positive counterfactual regrets and convert them into strategy probabilities (regret-matching).
 
-CFR is a family of algorithms that iteratively minimizes regret to converge on optimal game-theoretic strategies. In two-player zero-sum games like Liar's Dice:
+These concepts motivate MCCFR: the algorithm estimates counterfactual regrets by sampling and uses regret-matching to build an average strategy that converges in expectation to a Nash equilibrium.
 
-- **Nash Equilibrium**: A strategy profile where no player can improve their expected value by unilaterally changing their strategy
-- **Counterfactual Regret**: Measures how much a player "regrets" not choosing a different action in hindsight
-- **CFR Algorithm**: Repeatedly samples game states, computes regrets, and adjusts strategy toward equilibrium
+#### Theory (External-Sampling MCCFR)
 
-The agent learns a **mixed strategy** (probabilistic action selection) that is unexploitable in the long run. This makes it particularly strong against any opponent, as it plays game-theoretically sound poker-like strategies.
+This implementation uses External-Sampling MCCFR (a Monte Carlo CFR variant). Key points:
 
-**Key Properties:**
-- Proven convergence to Nash equilibrium in two-player zero-sum games
-- Handles imperfect information (hidden dice) naturally
-- Learns optimal bluffing and calling frequencies
-- Works for any dice configuration (different numbers of dice per player)
+- Instead of exhaustively traversing every game-history node each iteration, MCCFR samples chance outcomes and opponent actions to estimate regrets and strategy updates, dramatically reducing per-iteration cost for large games.
+- External-sampling means traversal nodes for the traversing player are fully expanded (to compute action utilities), while opponent nodes are sampled according to their current strategy. This yields unbiased regret estimates in expectation and enables efficient updates.
+- The algorithm accumulates an average strategy (strategy sums) during training; the final policy maps information sets (a player's private dice and the public last-bid context) to mixed-action probabilities.
+- MCCFR converges in expectation to a Nash equilibrium given sufficient iterations; convergence should be monitored via regret or strategy-delta metrics rather than instantaneous exploitability.
 
-#### Training
+**Practical implications:**
+- Scales to multi-dice configurations that would be infeasible for full-tree CFR.
+- Supports per-configuration parallelization: each dice-count combination (e.g., (2,3)) can be trained independently and aggregated into the final policy dictionary.
+- Checkpointing and TensorBoard logging are supported to track convergence diagnostics during long runs.
 
-Train NashCFRAgent policies for all dice count combinations in parallel:
+#### Training (how to run MCCFR here)
+
+Train MCCFR policies for dice count combinations in parallel:
 
 1. **Install requirements**:
     ```powershell
@@ -231,31 +234,36 @@ Train NashCFRAgent policies for all dice count combinations in parallel:
     ```powershell
     python -m scripts.train_nash_cfr_agent --num_players 2 --max_dice 5 --iterations 1000000 --tensorboard runs/cfr_training
     ```
-    
+
     **Parameters:**
-    - `--iterations`: Number of CFR iterations per configuration (higher = better convergence)
-    - `--tensorboard`: Directory for TensorBoard logs
-    - `--checkpoint`: Path to save trained policies
-    
-    Training generates policies for all dice combinations ((1,1), (1,2), ..., (5,5)) in parallel.
+    - `--iterations`: Number of MCCFR iterations per configuration (more iterations improves convergence).
+    - `--tensorboard`: Directory for TensorBoard logs (convergence metrics and regret traces are logged here).
+    - `--checkpoint`: Path to save intermediate policy checkpoints (the script stores a pickle with a `policies` dictionary and related metrics).
+
+    The training script enumerates or accepts a set of dice-count combinations (e.g., all tuples from (1,1) to `(max_dice,...,max_dice)`) and trains each configuration. Checkpoint files are written as the run proceeds so long jobs can be resumed.
 
 3. **Monitor convergence**:
     ```powershell
     tensorboard --logdir runs/cfr_training
     ```
-    Navigate to `http://localhost:6006` to view convergence plots for each configuration.
+    Open `http://localhost:6006` to inspect convergence plots, regret histories, and other logged diagnostics.
 
-4. **HPC/Slurm Usage**:
+4. **Parallel / HPC usage**:
     ```bash
     #!/bin/bash
     #SBATCH --cpus-per-task=32
     #SBATCH --mem=16G
     #SBATCH --time=12:00:00
-    
+
     python -m scripts.train_nash_cfr_agent --iterations 1000000
     ```
 
-The trained policy is automatically loaded by `NashCFRAgent` when used in the engine.
+5. **Checkpointing and artifacts**:
+
+- The trainer writes checkpoint pickles that contain accumulated `policies` and optional `metrics` for the trained configurations. When training is performed in parallel across processes or machines, the workflow saves partial policy files which are later merged into a single `nash_cfr_policy.pkl`.
+- The training utilities in this repository now remove intermediate partial files after a successful merge to keep the weights directory tidy.
+
+The trained policy dictionary is automatically loadable by `NashCFRAgent` when provided the appropriate weights file or in-memory policy mapping.
 
 ---
 
