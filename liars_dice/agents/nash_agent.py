@@ -37,13 +37,29 @@ class NashCFRAgent(Agent):
             if not os.path.exists(weights_path):
                 raise UntrainedAgentException(f"No trained policy found at {weights_path}.")
             self.policy_dict = NashCFRAgent.load_policy_dict(weights_path)
+        
+        # Cache for sorted dice and config tuples (reset per round)
+        self._cached_my_dice = None
+        self._cached_dice_raw = None
+        self._cached_config_key = None
+        self._cached_config = None
 
     def choose_action(self, view):
-        my_dice = tuple(sorted(view["my_dice"]))
-        last_bid = view["public"].last_bid
+        # Cache sorted dice tuple (only recompute if hand changed)
+        my_dice_raw = view["my_dice"]
+        if my_dice_raw is not self._cached_dice_raw:
+            self._cached_dice_raw = my_dice_raw
+            self._cached_my_dice = tuple(sorted(my_dice_raw))
+        my_dice = self._cached_my_dice
+        
+        # Cache config-derived tuples
         config = view.get("config")
-        dice_counts = tuple(view["public"].dice_counts)
-        faces = tuple(config.faces)
+        if config is not self._cached_config:
+            self._cached_config = config
+            self._cached_config_key = (tuple(view["public"].dice_counts), tuple(config.faces))
+        
+        last_bid = view["public"].last_bid
+        dice_counts, faces = self._cached_config_key
         total_dice = sum(dice_counts)
         
         # Info set key: (my_dice, last_bid_quantity, last_bid_face)

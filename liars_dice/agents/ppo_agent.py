@@ -22,7 +22,7 @@ class PPOAgent(Agent):
     Inherits from Agent to be compatible with GameEngine and Tournament scripts.
     This agent uses a HistoryObservationEncoder to encode observations, and loads it's weights from agents/weights/ppo_model.zip.
     """
-    def __init__(self, model_path=None):
+    def __init__(self, model_path=None, stochastic=False):
         # Default to the path in config if none provided
         if model_path is None:
             model_path = TRAINING_CONFIG["model_save_path"]
@@ -32,6 +32,7 @@ class PPOAgent(Agent):
         self.history_buffer = []
         self.last_round_idx = -1
         self.last_bid_on_table = None
+        self.stochastic = stochastic  # Whether to use stochastic policy (for training diversity)
         
         # Load Model
         full_path = model_path if model_path.endswith(".zip") else f"{model_path}.zip"
@@ -80,7 +81,7 @@ class PPOAgent(Agent):
         mask = self._get_action_mask(view)
 
         # 5. Predict
-        action_idx, _ = self.model.predict(obs, action_masks=mask, deterministic=True)
+        action_idx, _ = self.model.predict(obs, action_masks=mask, deterministic=not self.stochastic)
         
         # 6. Decode
         game_action = self._decode_action(action_idx)
@@ -345,10 +346,6 @@ def train_ppo_agent(opponent_cls, game_config, load_path=None, save_name="ppo_mo
     os.makedirs(save_dir, exist_ok=True)
     save_path = os.path.join(save_dir, save_name)
     model.save(save_path)
-    
-    print(f"\n{'='*60}", flush=True)
-    print(f"Training finished. Model saved to {save_path}.zip", flush=True)
-    print(f"{'='*60}\n", flush=True)
     
     env.close()
     return save_path

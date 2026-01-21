@@ -7,8 +7,8 @@ MODEL_CONFIG = {
     "policy_type": "MlpPolicy",
     "learning_rate": 3e-4,
     "gamma": 0.99,          # Discount factor (high because only terminal reward matters)
-    "batch_size": 64,
-    "ent_coef": 0.01,       # Entropy coefficient to encourage exploration
+    "batch_size": 128,      # Increased from 64 to reduce variance in gradients
+    "ent_coef": 0.05,       # Reduced from 0.1 for curriculum (higher in league if needed)
     "history_length": 10,   # Size of the sliding window for memory
     "policy_kwargs": {
         "net_arch": [256, 256] # Custom architecture: 2 hidden layers of 256 neurons

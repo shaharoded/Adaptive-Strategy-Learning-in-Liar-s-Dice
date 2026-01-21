@@ -54,7 +54,10 @@ class LiarsDiceGymEnv(gym.Env):
         
         # --- Internal Game State ---
         self.engine = GameEngine(self.cfg)
-        self.opponent = opponent_agent_cls()
+        self.opponent_agent_cls = opponent_agent_cls  # Store class, not instance
+        self.opponent = None  # Will be recreated periodically in reset()
+        self.opponent_batch_size = 5  # Keep same opponent for 5 episodes, then resample
+        self.episodes_with_current_opponent = 0  # Track episode count with current opponent
         self.rl_player_id = 0  # Will be randomized in reset() if randomize_position=True
         
         # --- Full Match State (dice elimination) ---
@@ -88,25 +91,46 @@ class LiarsDiceGymEnv(gym.Env):
         """
         super().reset(seed=seed)
         
-        # 1. Randomize RL agent position (helps learn from both perspectives)
+        # 1. Recreate opponent periodically (batched, not every episode)
+        # This allows agent to learn from opponent patterns while maintaining diversity
+        should_recreate = (
+            self.opponent is None or 
+            self.episodes_with_current_opponent >= self.opponent_batch_size
+        )
+        
+        if should_recreate:
+            self.opponent = self.opponent_agent_cls()
+            self.episodes_with_current_opponent = 0
+            
+            # Special handling for LeagueOpponent - resample opponent
+            if hasattr(self.opponent, 'reset_for_new_episode'):
+                self.opponent.reset_for_new_episode()
+        else:
+            # Keep same opponent but resample if it has reset capability
+            if hasattr(self.opponent, 'reset_for_new_episode'):
+                self.opponent.reset_for_new_episode()
+        
+        self.episodes_with_current_opponent += 1
+        
+        # 2. Randomize RL agent position (helps learn from both perspectives)
         if self.randomize_position:
             self.rl_player_id = np.random.randint(0, 2)  # Randomly 0 or 1
         else:
             self.rl_player_id = 0
         
-        # 2. Reset Match State (dice counts)
+        # 3. Reset Match State (dice counts)
         self.rl_agent_dice = self.initial_dice_per_player
         self.opponent_dice = self.initial_dice_per_player
         self.match_winner = None
         
-        # 3. Reset Engine
+        # 4. Reset Engine
         self.engine = GameEngine(self.cfg) 
         self._start_new_round_with_dice_counts()
         
-        # 4. Reset Encoder History
+        # 5. Reset Encoder History
         self.encoder.reset()
         
-        # 5. Handle Opponent Turn (if they are Player 0)
+        # 6. Handle Opponent Turn (if they are Player 0)
         if self.engine.state.public.current_player != self.rl_player_id:
             self._play_opponent_turn_sequence()
             
@@ -115,8 +139,13 @@ class LiarsDiceGymEnv(gym.Env):
     def _start_new_round_with_dice_counts(self):
         """Start a new round with current dice counts from match state."""
         # Update player dice counts based on match state
-        self.engine.state.players[0].num_dice = self.rl_agent_dice
-        self.engine.state.players[1].num_dice = self.opponent_dice
+        # Respect which player is the RL agent
+        if self.rl_player_id == 0:
+            self.engine.state.players[0].num_dice = self.rl_agent_dice
+            self.engine.state.players[1].num_dice = self.opponent_dice
+        else:  # rl_player_id == 1
+            self.engine.state.players[0].num_dice = self.opponent_dice
+            self.engine.state.players[1].num_dice = self.rl_agent_dice
         self.engine.start_new_round()
 
     def get_action_mask(self):
@@ -180,11 +209,11 @@ class LiarsDiceGymEnv(gym.Env):
             # Check if match is over (someone has 0 dice)
             if self.rl_agent_dice == 0:
                 self.match_winner = 1  # Opponent wins
-                total_reward += -5.0  # Large penalty for losing the match
+                total_reward += -10.0  # Large penalty for losing the match
                 terminated = True
             elif self.opponent_dice == 0:
                 self.match_winner = 0  # RL agent wins
-                total_reward += 5.0  # Large reward for winning the match
+                total_reward += 10.0  # Large reward for winning the match
                 terminated = True
             else:
                 # Match continues - start a new round with reduced dice
@@ -249,7 +278,8 @@ class LiarsDiceGymEnv(gym.Env):
                 state=view, 
                 action=last_action, 
                 player=self.rl_player_id, # Always calculate reward for RL agent
-                public_state=self.engine.state.public
+                public_state=self.engine.state.public,
+                event_details=ev  # Pass full event for extra info like was_true
             )
             step_reward += r
         return step_reward

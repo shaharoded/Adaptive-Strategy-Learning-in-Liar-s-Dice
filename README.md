@@ -297,113 +297,131 @@ The agent learns through **curriculum training**: starting with simple opponents
 
 #### Training
 
-Train the PPO agent through curriculum learning or against specific opponents:
+The PPO agent now uses a **two-phase curriculum + loss-weighted extended training**:
 
 1. **Install requirements**:
     ```powershell
-    pip install sb3-contrib tensorboard gymnasium
+    pip install sb3-contrib tensorboard gymnasium torch
     ```
 
-2. **Full Curriculum Training** (recommended for best results):
+2. **Run Training** (curriculum + extended loss-weighted phase):
     ```powershell
-    python scripts/train_ppo_curriculum.py
+    python scripts/train_ppo_curriculum.py --fresh-start
     ```
     
-    This trains the agent against 25+ opponents in increasing difficulty:
-    - Stage 1-3: Random agents (90k steps)
-    - Stage 4-7: Simple heuristics (160k steps)
-    - Stage 8-13: Advanced heuristics (300k steps)
-    - Stage 14-21: Specialized strategies (480k steps)
-    - Stage 22: Bayesian agent (100k steps)
-    - Stage 23: Nash/CFR agent (150k steps)
-    - Stage 24+: League-based self-play (optional)
-    
-    **Auto-Resume:** Curriculum training automatically continues from existing model if found.
-    
-    **League-Based Self-Play:**
-    When enabled with `--self-play`, training uses a league approach inspired by AlphaStar:
-    - Each iteration, the agent trains against a pool of opponents including ALL curriculum agents + frozen past versions of itself
-    - This prevents catastrophic forgetting by maintaining exposure to diverse strategies
-    - The opponent pool grows each iteration (e.g., iteration 3 = 23 curriculum agents + 3 frozen selves)
-    - Frozen self-play opponents use stochastic policies to prevent positional bias
-    
-    **Curriculum Options:**
-    - `--fresh-start`: Ignore existing model and start from scratch
-    - `--timesteps N`: Override timesteps per stage
-    - `--stages 5 10 15`: Train only specific stages
-    - `--self-play`: Add league-based self-play after curriculum
-    - `--self-play-iterations N`: Number of self-play iterations (default: 3)
-    - `--disable-early-stopping`: Train for full timesteps (no auto-stop)
-    - `--win-rate-threshold 0.90`: Stop when 90% win rate is reached (default: 0.95), applies to both curriculum and self-play
+    **Phase 1: Streamlined Curriculum (Sequential)**
+    - Random Agent (50k) → ProbabilityMinRaise (100k) → Bayesian (150k) → Nash/CFR (200k if available)
 
-    **Note:** Self-play league training is challenging since the agent faces a diverse pool. Win rate thresholds around 60-75% may be more realistic than 95% for self-play stages.
+    **Phase 2: Extended Curriculum (Loss-Weighted, Fixed Evaluation Set)**
+    - Evaluate against all registered base opponents (fixed set, e.g., 50 games each)
+    - Compute loss rates per opponent; sample opponents proportional to loss rate
+    - Train in chunks (default 50k steps) and re-evaluate until no improvement for 5 checks or target reached
 
-3. **Single Opponent Training** (adds to existing agent):
-    ```powershell
-    python scripts/train_ppo_single.py --opponent random --timesteps 100000
-    ```
-    
-    Train against a specific opponent. Automatically continues from existing model if found (acts like adding a curriculum stage).
-    
-    **Available Opponents:**
-    - `random`, `cautious`, `aggressive` - Random agents
-    - `conservative`, `aggressive_heur`, `min_raise`, `max_raise` - Simple heuristics
-    - `prob_min`, `prob_max`, `mirror`, `max_count` - Probability-based
-    - `random_face`, `safe_face`, `bluffing`, `threshold` - Specialized
-    - `bayesian` - Bayesian inference agent
-    - `nash_cfr` - Game-theoretic optimal agent
-    
-    **Single Training Options:**
-    - `--timesteps N`: Number of training steps (default: 100,000)
-    - `--win-rate-threshold 0.90`: Stop at 90% win rate (default: 0.95)
-    - `--disable-early-stopping`: Train for full timesteps
-    - `--fresh-start`: Ignore existing model and start from scratch
-    - `--model-name custom_model`: Use custom model name (default: ppo_model)
-    
-    **Examples:**
-    ```powershell
-    # Train against Random agent with early stopping at 90% win rate
-    python scripts/train_ppo_single.py --opponent random --timesteps 100000 --win-rate-threshold 0.90
-    
-    # Continue training against Bayesian agent (enhances existing model)
-    python scripts/train_ppo_single.py --opponent bayesian --timesteps 150000
-    
-    # Train against Nash agent for full timesteps (no early stopping)
-    python scripts/train_ppo_single.py --opponent nash_cfr --timesteps 200000 --disable-early-stopping
-    
-    # Start fresh against a specific opponent
-    python scripts/train_ppo_single.py --opponent conservative --timesteps 50000 --fresh-start
+    **Key Features:**
+    - Position randomization (plays both first/second)
+    - Action masking for legal moves
+    - Fixed evaluation set → stable, comparable metrics
+    - Loss-weighted sampling focuses on current weaknesses without league churn
+    - Auto-stop when average win rate plateaus or meets target
+
+    **Training Options:**
+    ```bash
+    # Basic training
+    python scripts/train_ppo_curriculum.py --fresh-start
+
+    # Skip extended phase (curriculum only)
+    python scripts.train_ppo_curriculum.py --fresh-start --skip-extended
+
+    # Customize extended phase
+    python scripts/train_ppo_curriculum.py --fresh-start \
+        --timesteps 50000 \               # Curriculum stage timesteps
+        --extended-timesteps 1000000 \    # Total steps for first extended chunk
+        --eval-interval 50000 \           # Steps between eval checkpoints
+        --evaluation-games 50 \           # Games per opponent per eval
+        --win-rate-threshold 0.95         # Target average win rate to stop
     ```
 
-4. **Monitor training**:
+        **Observed convergence (latest run):**
+        - Reached ~94.5% average win rate against the fixed registered-opponent set in the extended phase.
+        - Evaluation structure:
+
+        ================================================================================
+        EVALUATION CHECKPOINT X
+        ================================================================================
+
+        Opponent                       Win Rate        Wins/Games
+        ------------------------------ --------------- ---------------
+        ✓ AggressiveAgent              100.0% ████████████████████  50/50
+        ⚠️ AggressiveRandomAgent         84.0% ████████████████░░░░  42/50
+        ⚠️ AlternatorAgent               50.0% ██████████░░░░░░░░░░  25/50
+        ⚠️ BayesianAgent                 50.0% ██████████░░░░░░░░░░  25/50
+        .
+        .
+        .
+
+        - Convergence history (average win rate):
+            - Checkpoint 1: 87.8%
+            - Checkpoint 2: 91.0%
+            - Checkpoint 3: 92.5%
+            - Checkpoint 4: 93.0%
+            - Checkpoint 5: 94.5%
+            - Checkpoint 6: 92.1%
+            - Checkpoint 7: 94.1%
+            - Checkpoint 8: 91.5%
+            - Checkpoint 9: 93.8%
+            - Checkpoint 10: 93.6%
+
+3. **Monitor Training Progress**:
     ```powershell
     tensorboard --logdir=./runs/ppo_training/
     ```
-    Navigate to `http://localhost:6006` to view:
-    - Episode rewards (convergence indicator)
-    - Policy/value losses
-    - Exploration metrics (entropy)
-    - Win rates against each opponent (updated every 100 matches)
+    Open `http://localhost:6006` to view:
+    - Episode rewards and win rates
+    - Training loss curves
+    - Per-opponent performance during curriculum
 
-5. **Training Features**:
-    - **Dice Elimination**: Matches play with full dice elimination (loser loses 1 die per round)
-    - **Early Stopping**: Automatically stops when target win rate is achieved
-    - **Auto-Resume**: Single opponent training automatically continues from existing model
-    - **Curriculum Continuity**: Each stage builds on previous learning
+4. **Diagnostic Tools**:
+    ```powershell
+    # Watch agent play with detailed decision analysis
+    python scripts/debug_agent_observations.py
+    ```
+    Shows what the agent sees (observations, action masks) and analyzes its bidding decisions in real-time.
 
-**Trained models** are saved to `liars_dice/agents/weights/ppo_model.zip` and can be loaded with:
-```python
-from liars_dice.agents.ppo_agent import PPOAgent
-agent = PPOAgent()  # Loads default model
+#### Customizing Opponents
+
+The dynamic league automatically discovers all registered agents using `AGENT_MAP`:
+
+- **Add opponents**: Create agent with `@register_agent("name")` decorator
+- **Exclude opponents**: Remove `@register_agent` decorator from agents you don't want evaluated
+- The system automatically includes any new registered agents in evaluation
+
+#### Troubleshooting
+
+**Agent not improving:**
+```bash
+--league-timesteps 200000 --win-rate-threshold 0.85
 ```
 
-**Notes:**
-- Single opponent training automatically continues from existing model (like adding curriculum stages)
-- Both curriculum and single training support early stopping based on win rate
-- Training uses full match simulation with dice elimination (realistic gameplay)
-- Untrained agents (Nash/CFR or PPO) are automatically skipped during curriculum training
-- Both agents raise `UntrainedAgentException` if model files are missing
-Training artifacts: the curriculum training overwrites `ppo_model.zip` each stage (no per-stage files), and final self-play artifacts are saved with `_selfplay` suffix when used. If you require periodic checkpoints, enable or add a `CheckpointCallback` in `liars_dice/agents/ppo_agent.py` or run training with external model-saving scripts.
+**Training too slow:**
+```bash
+--evaluation-games 50 --league-timesteps 50000
+```
+
+**Can't master specific opponents:**
+```bash
+--mastery-threshold 0.90  # Lower threshold to 90%
+```
+
+#### Using the Trained Agent
+
+After training completes, the agent is automatically available:
+
+```python
+from liars_dice.agents.ppo_agent import PPOAgent
+agent = PPOAgent()  # Loads from weights/ppo_model.zip
+```
+
+Use in tournaments, GUI/CLI, or custom scripts.
 
 ---
 
