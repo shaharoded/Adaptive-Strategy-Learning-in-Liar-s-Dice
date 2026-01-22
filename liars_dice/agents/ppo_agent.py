@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 import numpy as np
 from sb3_contrib import MaskablePPO
 from sb3_contrib.common.wrappers import ActionMasker
@@ -26,8 +27,15 @@ class PPOAgent(Agent):
         # Default to the path in config if none provided
         if model_path is None:
             model_path = TRAINING_CONFIG["model_save_path"]
-            
-        self.encoder = None # Will init lazily or via setup
+
+        # Resolve model path robustly: allow relative paths but anchor to this file's directory
+        model_path = Path(model_path)
+        if model_path.suffix != ".zip":
+            model_path = model_path.with_suffix(".zip")
+        if not model_path.is_absolute():
+            model_path = (Path(__file__).parent / model_path).resolve()
+
+        self.encoder = None  # Will init lazily or via setup
         self.model = None
         self.history_buffer = []
         self.last_round_idx = -1
@@ -35,7 +43,7 @@ class PPOAgent(Agent):
         self.stochastic = stochastic  # Whether to use stochastic policy (for training diversity)
         
         # Load Model
-        full_path = model_path if model_path.endswith(".zip") else f"{model_path}.zip"
+        full_path = str(model_path)
         if os.path.exists(full_path):
             self.model = MaskablePPO.load(full_path)
         else:
