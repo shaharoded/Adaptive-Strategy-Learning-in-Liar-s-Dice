@@ -123,6 +123,9 @@ class GameEngine:
     def start_new_round(self) -> None:
         """
         Start a new round: roll dice, reset public state, emit initial events.
+        
+        Starting player is determined by next_round_starter if set (multi-round match),
+        otherwise defaults to player 0 (first round or single-round scripts).
         """
         p0, p1 = self.state.players
         p0.private_dice = roll_n(p0.num_dice, self.rng)
@@ -130,11 +133,16 @@ class GameEngine:
         self.state.public.status = "BIDDING"
         self.state.public.round_index += 1
         self.state.public.turn_index = 0
-        self.state.public.current_player = 0
+        self.state.public.current_player = (
+            self.state.public.next_round_starter 
+            if self.state.public.next_round_starter is not None 
+            else 0
+        )
         self.state.public.last_bid = None
         self.state.public.bid_history = []
         self.state.public.winner = None
         self.state.public.loser = None
+        self.state.public.next_round_starter = None
         self._emit({"type": "RoundStarted", "round": self.state.public.round_index})
         self._emit({"type": "DiceRolled", "player0": p0.private_dice.copy(), "player1": p1.private_dice.copy()})
         # snapshot initial state of the round (no actor/action)
@@ -231,6 +239,7 @@ class GameEngine:
             winner = caller_id
         self.state.public.winner = winner
         self.state.public.loser = loser
+        self.state.public.next_round_starter = winner  # For multi-round matches, round winner starts next
         self.state.public.status = "ENDED"
         self._emit({"type": "DiceRevealed", "all_dice": all_dice})
         self._emit({"type": "RoundEnded", "winner": winner, "loser": loser, "match_count": match_count, "was_true": was_true})

@@ -52,6 +52,7 @@ class PublicState:
     status: str = "NOT_STARTED"  # BIDDING | REVEAL | ENDED
     winner: Optional[int] = None
     loser: Optional[int] = None
+    next_round_starter: Optional[int] = None  # For multi-round matches: previous round's winner
 
 
 @dataclass
