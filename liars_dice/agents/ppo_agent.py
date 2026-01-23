@@ -259,7 +259,7 @@ class WinRateCallback(BaseCallback):
 # --- Training Function ---
 
 def train_ppo_agent(opponent_cls, game_config, load_path=None, save_name="ppo_model", 
-                   total_timesteps=None, log_interval=10, enable_early_stopping=True, 
+                   total_timesteps=None, enable_early_stopping=True, 
                    win_rate_threshold=0.95):
     """
     Trains the PPO Agent against a specific opponent class.
@@ -271,7 +271,6 @@ def train_ppo_agent(opponent_cls, game_config, load_path=None, save_name="ppo_mo
         load_path: Optional path to load an existing model to continue training.
         save_name: Name for the saved model file.
         total_timesteps: Number of timesteps to train. If None, uses config default.
-        log_interval: How often (in episodes) to print training progress.
         enable_early_stopping: If True, stops when win_rate_threshold is reached.
         win_rate_threshold: Win rate threshold for early stopping (default: 0.95 = 95%).
     
