@@ -125,7 +125,6 @@ def main():
         load_path=load_path,
         save_name=model_name,
         total_timesteps=args.timesteps,
-        log_interval=10,
         enable_early_stopping=not args.disable_early_stopping,
         win_rate_threshold=args.win_rate_threshold
     )

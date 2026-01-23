@@ -298,7 +298,6 @@ def train_curriculum(resume=False, base_timesteps=None, stages=None, enable_earl
                 load_path=current_model_path,  # Load from previous stage or None
                 save_name="ppo_model",  # Always save to same file
                 total_timesteps=timesteps,
-                log_interval=10,
                 enable_early_stopping=enable_early_stopping,
                 win_rate_threshold=win_rate_threshold
             )
@@ -432,7 +431,6 @@ def extended_curriculum_training(base_model_path, timesteps=500_000,
         load_path=current_path,
         save_name="ppo_model",
         total_timesteps=timesteps,
-        log_interval=10,
         enable_early_stopping=False,  # Manual eval-based stopping
         win_rate_threshold=0.99  # Very high to avoid early stop
     )
@@ -526,7 +524,6 @@ def extended_curriculum_training(base_model_path, timesteps=500_000,
             load_path=current_path,
             save_name="ppo_model",
             total_timesteps=eval_interval_steps,
-            log_interval=10,
             enable_early_stopping=False,
             win_rate_threshold=0.99
         )
