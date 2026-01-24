@@ -453,9 +453,10 @@ def extended_curriculum_training(base_model_path, timesteps=500_000,
         print(f"EVALUATION CHECKPOINT {eval_count}")
         print(f"{'='*80}\n")
         
-        # Evaluate current model
+        # Evaluate current model (convert to absolute path to avoid path duplication)
+        abs_model_path = str(Path(current_path).resolve())
         eval_results = evaluate_agent_against_all(
-            agent_path=current_path,
+            agent_path=abs_model_path,
             game_config=game_config,
             num_games=evaluation_games,
             additional_opponents=None  # No frozen selves - fixed evaluation set
