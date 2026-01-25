@@ -39,6 +39,7 @@ from liars_dice.agents.heuristic_agent import (
     MaxCountBidAgent
 )
 from liars_dice.agents.bayesian_agent import BayesianAgent
+from liars_dice.agents.ppo_agent import PPOAgent
 from liars_dice.agents import AGENT_MAP
 from liars_dice.agents.adapter_agent.adaptive_training import (
     train_specialist_expert,
@@ -48,21 +49,31 @@ from liars_dice.agents.adapter_agent.adaptive_training import (
 from liars_dice.agents.adapter_agent.config import EXPERT_CONFIG, CLASSIFIER_CONFIG, PATH_CONFIG
 
 
-# Available opponents
-OPPONENTS = {
-    "random": RandomAgent,
-    "random_cautious": CautiousRandomAgent,
-    "random_aggressive": AggressiveRandomAgent,
-    "conservative": ConservativeAgent,
-    "aggressive": AggressiveAgent,
-    "probability_min": ProbabilityMinRaiseAgent,
-    "probability_max": ProbabilityMaxRaiseAgent,
-    "minraise": MinRaiseAgent,
-    "maxraise": MaxRaiseAgent,
-    "mirror": MirrorAgent,
-    "maxcount": MaxCountBidAgent,
-    "bayesian": BayesianAgent,
-}
+def get_opponent_classes():
+    """
+    Build opponent classes from AGENT_MAP + add frozen generalist PPO.
+    This ensures we train specialists against ALL available agents.
+    """
+    opponent_classes = {}
+    
+    # Get all agents from AGENT_MAP (excludes rl_ppo and adaptive)
+    for agent_name, agent_cls in AGENT_MAP.items():
+        if agent_name not in ["rl_ppo", "adaptive"]:
+            try:
+                _ = agent_cls()  # Test instantiation
+                opponent_classes[agent_cls.__name__] = agent_cls
+            except Exception:
+                pass
+    
+    # Add the frozen generalist PPO as an opponent
+    class GeneralistPPOAgent(PPOAgent):
+        """Frozen generalist PPO model as a trainable opponent."""
+        def __init__(self):
+            super().__init__(model_path=PATH_CONFIG["generalist_model"], stochastic=False)
+    
+    opponent_classes["GeneralistPPO"] = GeneralistPPOAgent
+    
+    return opponent_classes
 
 
 def train_adaptive_system(
@@ -183,6 +194,10 @@ def train_adaptive_system(
 
 
 def main():
+    # Build opponent classes from AGENT_MAP
+    opponent_classes = get_opponent_classes()
+    opponent_names = sorted(opponent_classes.keys())
+    
     parser = argparse.ArgumentParser(description="Train adaptive agent system")
     
     # Mode selection
@@ -194,7 +209,7 @@ def main():
                        help="Evaluate all trained experts")
     
     # Opponent selection (for training single expert)
-    parser.add_argument("--opponent", type=str, choices=list(OPPONENTS.keys()),
+    parser.add_argument("--opponent", type=str, choices=opponent_names,
                        help="Opponent agent type (for single expert training)")
     
     # Training parameters
@@ -230,16 +245,6 @@ def main():
         faces=(1, 2, 3, 4, 5, 6),
         ones_wild=args.ones_wild
     )
-    
-    # Get opponent classes
-    opponent_classes = {}
-    for agent_name, agent_cls in AGENT_MAP.items():
-        if agent_name not in ["rl_ppo", "adaptive"]:  # Exclude RL agents
-            try:
-                _ = agent_cls()
-                opponent_classes[agent_cls.__name__] = agent_cls
-            except Exception:
-                pass
     
     # === TRAIN ALL MODE ===
     if args.train_all:
@@ -278,8 +283,8 @@ def main():
     
     # === SINGLE EXPERT TRAINING MODE ===
     if args.opponent:
-        opponent_cls = OPPONENTS[args.opponent]
-        opponent_name = opponent_cls.__name__
+        opponent_cls = opponent_classes[args.opponent]
+        opponent_name = args.opponent
         print(f"\nTraining single expert for adaptive system: {opponent_name}\n")
         
         base_model_path = PATH_CONFIG["generalist_model"]

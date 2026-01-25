@@ -1,0 +1,1 @@
+# Hat adapter agent memory and code

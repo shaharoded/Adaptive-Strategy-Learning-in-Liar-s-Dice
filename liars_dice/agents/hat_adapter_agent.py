@@ -1,6 +1,13 @@
+"""
+An early version of the adaptive agent,
+This agent and it's training process manages an external memory of best "hats" (agents) in a specific state of the game.
+This is a strategy optimizer Mixture-of-Experts implementation, designed to pick "the best horse" at a given state.
+"""
+
+
 from liars_dice.agents import register_agent
 from .base import Agent, UntrainedAgentException
-from adapter_agent.memory import Memory
+from liars_dice.agents.hat_adapter_agent.memory import Memory
 from liars_dice.agents.random_agent import RandomAgent
 from liars_dice.agents.bayesian_agent import BayesianAgent
 from liars_dice.agents.heuristic_agent import ConservativeAgent
@@ -10,8 +17,8 @@ from collections import Counter
 from typing import Dict, Any
 
 
-@register_agent("adapter_agent")
-class AdapterAgent(Agent):
+@register_agent("hat_adapter_agent")
+class HatAdapterAgent(Agent):
     def __init__(self, memory_file='memory_checkpoint_7000000_games.pkl'):
         super().__init__()
         self.memory = Memory(memory_file)

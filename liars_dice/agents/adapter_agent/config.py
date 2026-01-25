@@ -50,8 +50,7 @@ PATH_CONFIG = {
 
 # Opponent Identification Thresholds
 IDENTIFICATION_CONFIG = {
-    "confidence_threshold": 0.7,    # Min probability to commit to expert (70%)
-    "min_observations": 5,          # Min actions before making prediction
+    "min_observations": 4,          # Min actions before making prediction
     "update_frequency": 1,          # How often to update beliefs (every N actions)
 }
 

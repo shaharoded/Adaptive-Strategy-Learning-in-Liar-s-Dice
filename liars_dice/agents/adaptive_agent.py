@@ -13,13 +13,9 @@ This agent:
 from pathlib import Path
 from typing import Optional, Dict
 
-from liars_dice.core.actions import BidAction, CallLiarAction
-from liars_dice.core.bid import Bid
-
 from liars_dice.agents.base import Agent, UntrainedAgentException
 from liars_dice.agents.ppo_agent import PPOAgent
 from liars_dice.agents import register_agent
-from liars_dice.agents.adapter_agent.neural_belief_tracker import NeuralBeliefTracker
 from liars_dice.agents.adapter_agent.adaptive_training import load_neural_classifier
 from liars_dice.agents.adapter_agent.config import IDENTIFICATION_CONFIG, PATH_CONFIG
 
@@ -40,7 +36,6 @@ class AdaptiveAgent(Agent):
         classifier_path: Optional[str] = None,
         experts_dir: Optional[str] = None,
         generalist_path: Optional[str] = None,
-        confidence_threshold: Optional[float] = None,
         min_observations: Optional[int] = None,
         device: str = "cpu"
     ):
@@ -49,7 +44,6 @@ class AdaptiveAgent(Agent):
             classifier_path: Path to trained neural classifier (default: from PATH_CONFIG)
             experts_dir: Directory containing specialist expert models (default: from PATH_CONFIG)
             generalist_path: Path to generalist PPO model (default: from PATH_CONFIG)
-            confidence_threshold: Minimum belief probability to select expert (default: from IDENTIFICATION_CONFIG)
             min_observations: Minimum opponent actions before making prediction (default: from IDENTIFICATION_CONFIG)
             device: torch device ("cpu" or "cuda")
         """
@@ -75,7 +69,6 @@ class AdaptiveAgent(Agent):
             self.generalist_path = (Path(__file__).parent / self.generalist_path).resolve()
         
         # Load config defaults if not provided
-        self.confidence_threshold = confidence_threshold or IDENTIFICATION_CONFIG["confidence_threshold"]
         self.min_observations = min_observations or IDENTIFICATION_CONFIG["min_observations"]
         self.device = device
         
@@ -107,7 +100,6 @@ class AdaptiveAgent(Agent):
         self.last_public_state = None
         
         print(f"AdaptiveAgent initialized (Neural LSTM):")
-        print(f"  Confidence threshold: {self.confidence_threshold:.1%}")
         print(f"  Min observations: {self.min_observations}")
         print(f"  Device: {self.device}")
         print(f"  Available experts: {len(self.experts)}")
@@ -132,24 +124,21 @@ class AdaptiveAgent(Agent):
         self.belief_tracker.reset()
         self.current_expert = None
         self.observations_count = 0
-        self.last_opponent_action = None
-        self.last_game_state = None
         self.round_index = -1
+        self.last_public_state = None
     
     def choose_action(self, view):
         """
         Choose action using adaptive expert selection with neural belief tracking.
         
         Process:
-        1. Detect opponent actions from state changes
+        1. Receive opponent actions via ActionTrackerWrapper's record_opponent_action() calls
         2. Update neural belief tracker with opponent's trajectory
-        3. Select expert based on current beliefs
-        4. Delegate action choice to selected expert (or generalist)
+        3. Select expert based on current beliefs (argmax after min_observations)
+        4. Delegate action choice to selected expert (or generalist)        
         """
         # Extract state information
         public = view["public"]
-        my_dice = view.get("my_dice", [])
-        player_id = view.get("player_id", 0)
         
         # Check for new round (reset if needed)
         if public.round_index != self.round_index:
@@ -158,42 +147,7 @@ class AdaptiveAgent(Agent):
                 self.reset()
             self.round_index = public.round_index
         
-        # Build game state context
-        game_state = {
-            "last_bid": public.last_bid,
-            "total_dice": sum(public.dice_counts),
-            "my_dice_count": len(my_dice),
-            "opp_dice_count": sum(c for i, c in enumerate(public.dice_counts) if i != player_id),
-            "round_index": public.round_index
-        }
-        
-        # Detect opponent action from state change
-        if self.last_public_state is not None:
-            opponent_action = self._infer_opponent_action(self.last_public_state, public)
-            
-            if opponent_action is not None:
-                # Update neural belief tracker
-                revealed_dice = None  # We don't have access to revealed dice in this context
-                self.belief_tracker.update_belief(
-                    opponent_action,
-                    player_id=1,  # Opponent
-                    game_state=game_state,
-                    revealed_dice=revealed_dice
-                )
-                self.observations_count += 1
-                
-                # Log belief update periodically
-                if self.observations_count % 5 == 0:
-                    beliefs = self.belief_tracker.get_belief_distribution()
-                    entropy = self.belief_tracker.get_entropy()
-                    top_belief = max(beliefs.items(), key=lambda x: x[1])
-                    print(f"[Adaptive] Observations: {self.observations_count}, "
-                          f"Entropy: {entropy:.3f}, Top: {top_belief[0]} ({top_belief[1]:.1%})")
-        
-        # Store current state for next comparison
-        self.last_public_state = public
-        
-        # Select expert based on beliefs
+        # Select expert based on current beliefs (opponent actions recorded via wrapper)
         selected_agent = self._select_agent()
         
         # Delegate action to selected agent
@@ -201,27 +155,35 @@ class AdaptiveAgent(Agent):
         
         return action
     
-    def _infer_opponent_action(self, prev_public, curr_public):
+    def record_opponent_action(self, action, game_state: Dict, revealed_dice=None):
         """
-        Infer opponent action from public state transition.
-        """       
-        prev_bid = prev_public.last_bid
-        curr_bid = curr_public.last_bid
+        Directly record an opponent action that was observed.
+        This is the proper way to update beliefs - not by inferring from state changes.
         
-        # Check if bid changed
-        if prev_bid != curr_bid:
-            if curr_bid is not None:
-                # Opponent made a bid
-                return BidAction(Bid(curr_bid.quantity, curr_bid.face))
-            else:
-                # Round ended (opponent called liar)
-                return CallLiarAction()
-        
-        return None
+        Args:
+            action: The opponent's action (BidAction or CallLiarAction)
+            game_state: Game state context
+            revealed_dice: Revealed dice if round ended
+        """
+        # Add to trajectory
+        self.belief_tracker.update_belief(
+            action,
+            player_id=1,  # Opponent
+            game_state=game_state,
+            revealed_dice=revealed_dice
+        )
+        self.observations_count += 1
     
     def _select_agent(self) -> Agent:
         """
         Select which agent to use based on current beliefs.
+        
+        Strategy:
+        - If observations < min_observations: use generalist (not enough data)
+        - If observations >= min_observations: use argmax opponent immediately
+        
+        At every step, we reassess which expert to use based on updated beliefs.
+        This ensures smooth, responsive expert switching.
         
         Returns:
             The selected PPO agent (expert or generalist)
@@ -230,31 +192,21 @@ class AdaptiveAgent(Agent):
         if self.observations_count < self.min_observations:
             return self.generalist
         
-        # Get most likely opponent
-        predicted_opponent = self.belief_tracker.get_best_opponent(
-            confidence_threshold=self.confidence_threshold
-        )
+        # After minimum observations, use argmax to select the most likely opponent
+        beliefs = self.belief_tracker.get_belief_distribution()
+        best_opponent = max(beliefs.items(), key=lambda x: x[1])[0]
         
-        # Check if we should switch expert
-        if predicted_opponent != self.current_expert:
-            if predicted_opponent is not None:
-                # Switch to specialist expert
-                if predicted_opponent in self.experts:
-                    self.current_expert = predicted_opponent
-                    beliefs = self.belief_tracker.get_belief_distribution()
-                    print(f"\\n[Adaptive] Switching to expert for {predicted_opponent} "
-                          f"(confidence: {beliefs[predicted_opponent]:.1%})\\n")
-                else:
-                    # Expert not available - use generalist
-                    print(f"\\n[Adaptive] Expert for {predicted_opponent} not available, "
-                          f"using generalist\\n")
-                    return self.generalist
+        # Switch expert if prediction changed
+        if best_opponent != self.current_expert:
+            # Check if expert exists for this opponent
+            if best_opponent in self.experts:
+                self.current_expert = best_opponent
             else:
-                # Not confident - use generalist
+                # Expert not available - use generalist
                 self.current_expert = None
         
         # Return selected agent
-        if self.current_expert and self.current_expert in self.experts:
+        if self.current_expert is not None and self.current_expert in self.experts:
             return self.experts[self.current_expert]
         else:
             return self.generalist
@@ -274,6 +226,5 @@ class AdaptiveAgent(Agent):
             "entropy": entropy,
             "observations": self.observations_count,
             "current_expert": self.current_expert,
-            "confidence_threshold": self.confidence_threshold,
             "using_generalist": self.current_expert is None
         }
