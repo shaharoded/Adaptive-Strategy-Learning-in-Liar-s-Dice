@@ -11,8 +11,8 @@ import torch.nn.functional as F
 import numpy as np
 from typing import List, Dict, Optional, Tuple
 
-from liars_dice.agents.adapter_agent.config import CLASSIFIER_CONFIG
-from liars_dice.agents.adapter_agent.trajectory_encoder import TrajectoryEncoder
+from liars_dice.agents.adaptive_agent.config import CLASSIFIER_CONFIG
+from liars_dice.agents.adaptive_agent.trajectory_encoder import TrajectoryEncoder
 
 
 class OpponentClassifierLSTM(nn.Module):

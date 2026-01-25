@@ -16,8 +16,8 @@ from typing import Optional, Dict
 from liars_dice.agents.base import Agent, UntrainedAgentException
 from liars_dice.agents.ppo_agent import PPOAgent
 from liars_dice.agents import register_agent
-from liars_dice.agents.adapter_agent.adaptive_training import load_neural_classifier
-from liars_dice.agents.adapter_agent.config import IDENTIFICATION_CONFIG, PATH_CONFIG
+from liars_dice.agents.adaptive_agent.adaptive_training import load_neural_classifier
+from liars_dice.agents.adaptive_agent.config import IDENTIFICATION_CONFIG, PATH_CONFIG
 
 
 @register_agent("adaptive")
