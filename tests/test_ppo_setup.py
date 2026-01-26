@@ -17,11 +17,11 @@ from liars_dice.core.config import GameConfig
 
 # Try importing PPO dependencies
 try:
-    from liars_dice.agents.reinforcement_agent.encoder import HistoryObservationEncoder
-    from liars_dice.agents.reinforcement_agent.env import LiarsDiceGymEnv
+    from liars_dice.agents.reinforcement_agent_utils.encoder import HistoryObservationEncoder
+    from liars_dice.agents.reinforcement_agent_utils.env import LiarsDiceGymEnv
     from sb3_contrib import MaskablePPO
     from stable_baselines3.common.monitor import Monitor
-    from liars_dice.agents.reinforcement_agent.config import MODEL_CONFIG
+    from liars_dice.agents.reinforcement_agent_utils.config import MODEL_CONFIG
     PPO_AVAILABLE = True
 except ImportError as e:
     PPO_AVAILABLE = False

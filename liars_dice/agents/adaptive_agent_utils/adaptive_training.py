@@ -17,11 +17,13 @@ from tqdm import tqdm
 
 from liars_dice.core.config import GameConfig
 from liars_dice.core.engine import GameEngine
-from liars_dice.agents.ppo_agent import train_ppo_agent
-from liars_dice.agents.adapter_agent.config import CLASSIFIER_CONFIG, EXPERT_CONFIG, PATH_CONFIG
-from liars_dice.agents.reinforcement_agent.config import TRAINING_CONFIG
-from liars_dice.agents.adapter_agent.neural_belief_tracker import NeuralBeliefTracker
-from liars_dice.agents.adapter_agent.trajectory_encoder import TrajectoryEncoder
+from liars_dice.agents.random_agent import RandomAgent
+from liars_dice.agents.ppo_agent import PPOAgent, train_ppo_agent
+from liars_dice.agents.adaptive_agent_utils.config import CLASSIFIER_CONFIG, EXPERT_CONFIG, PATH_CONFIG
+from liars_dice.agents.adaptive_agent_utils.config import TRAINING_CONFIG as CLASSIFIER_TRAINING_CONFIG
+from liars_dice.agents.reinforcement_agent_utils.config import TRAINING_CONFIG as EXPERT_TRAINING_CONFIG
+from liars_dice.agents.adaptive_agent_utils.neural_belief_tracker import NeuralBeliefTracker
+from liars_dice.agents.adaptive_agent_utils.trajectory_encoder import TrajectoryEncoder
 
 
 def train_specialist_expert(
@@ -64,24 +66,17 @@ def train_specialist_expert(
     print(f"Target: {win_rate_threshold:.1%} win rate")
     print(f"{'='*80}\n")
     
-    # Temporarily override the training config to use adaptive_agent log directory
-    original_log_dir = TRAINING_CONFIG["log_dir"]
-    TRAINING_CONFIG["log_dir"] = EXPERT_CONFIG["log_dir"]
-    
-    try:
-        # Train using the existing PPO training infrastructure
-        saved_path = train_ppo_agent(
-            opponent_cls=opponent_cls,
-            game_config=game_config,
-            load_path=base_model_path,  # Warm start from base model if provided
-            save_name=f"adaptive_models/{expert_name}",
-            total_timesteps=total_timesteps,
-            enable_early_stopping=True,
-            win_rate_threshold=win_rate_threshold
-        )
-    finally:
-        # Restore original log directory
-        TRAINING_CONFIG["log_dir"] = original_log_dir
+    # Train using the existing PPO training infrastructure
+    saved_path = train_ppo_agent(
+        opponent_cls=opponent_cls,
+        game_config=game_config,
+        load_path=base_model_path,  # Warm start from base model if provided
+        save_name=f"adaptive_models/{expert_name}",
+        total_timesteps=total_timesteps,
+        enable_early_stopping=True,
+        win_rate_threshold=win_rate_threshold,
+        log_dir=PATH_CONFIG["expert_log_dir"]  # Use adaptive expert logging directory
+    )
     
     print(f"\n✓ Expert trained successfully: {saved_path}.zip")
     return saved_path
@@ -142,8 +137,6 @@ def collect_opponent_trajectories(
         (action, player_id, game_state, revealed_dice) tuples
     """
     print(f"Collecting trajectories from {opponent_name}... ({num_games} games)", flush=True)
-    
-    from liars_dice.agents.random_agent import RandomAgent
     player = RandomAgent()
     
     game_trajectories = []
@@ -225,14 +218,31 @@ def collect_opponent_trajectories(
             if player_id == opponent_player_id
         ]
         
-        if opponent_trajectory:  # Only add if opponent made at least one action
+        # Generate progressive trajectory samples for better early classification
+        # This allows the classifier to learn patterns from partial trajectories
+        min_cutoff = CLASSIFIER_CONFIG['min_observations']
+        
+        if opponent_trajectory and len(opponent_trajectory) >= min_cutoff:
+            # Add full trajectory
             game_trajectories.append((opponent_trajectory, opponent_name))
+            
+            # Add progressive samples (early game snapshots) to teach early classification
+            # This is crucial: we train on SHORT trajectories so we can classify early!
+            # Sample at min_cutoff, min_cutoff+2, min_cutoff+5, and intermediate points
+            max_intermediate = min(15, len(opponent_trajectory))
+            if len(opponent_trajectory) >= max_intermediate:
+                cutoffs = [min_cutoff, min_cutoff + 2, min_cutoff + 5, max_intermediate]
+                for cutoff in cutoffs:
+                    if min_cutoff < cutoff <= len(opponent_trajectory):
+                        partial = opponent_trajectory[:cutoff]
+                        game_trajectories.append((partial, opponent_name))
         
         # Progress
         if (game_idx + 1) % 100 == 0:
             print(f"  Collected {game_idx + 1}/{num_games} games...", flush=True)
     
-    print(f"✓ Collected {len(game_trajectories)} game trajectories from {opponent_name}\n", flush=True)
+    print(f"✓ Collected {len(game_trajectories)} game trajectories from {opponent_name}", flush=True)
+    print(f"  (with progressive samples for early classification training)\n", flush=True)
     return game_trajectories
 
 
@@ -241,7 +251,8 @@ def train_neural_classifier(
     game_config: GameConfig,
     samples_per_opponent: int = 1000,
     save_path: Optional[str] = None,
-    device: str = "cpu"
+    device: str = "cpu",
+    exclude_random_agents: Optional[bool] = None
 ) -> NeuralBeliefTracker:
     """
     Train the neural LSTM-based opponent classifier.
@@ -252,13 +263,37 @@ def train_neural_classifier(
         samples_per_opponent: Number of game trajectories to collect per opponent
         save_path: Path to save trained model (default: from PATH_CONFIG)
         device: torch device ("cpu" or "cuda")
+        exclude_random_agents: Whether to exclude purely random agents (default: from TRAINING_CONFIG)
         
     Returns:
         Trained NeuralBeliefTracker
-    """
+    """    
     # Use config default if not specified
     if save_path is None:
         save_path = PATH_CONFIG["neural_classifier"]
+    if exclude_random_agents is None:
+        exclude_random_agents = CLASSIFIER_TRAINING_CONFIG.get("exclude_random_agents", True)
+    
+    # Filter out random agents if configured
+    if exclude_random_agents:
+        excluded_patterns = CLASSIFIER_TRAINING_CONFIG.get("excluded_agent_patterns", [])
+        filtered_classes = {}
+        excluded_agents = []
+        
+        for opp_name, opp_cls in opponent_classes.items():
+            if opp_name in excluded_patterns:
+                excluded_agents.append(opp_name)
+            else:
+                filtered_classes[opp_name] = opp_cls
+        
+        if excluded_agents:
+            print(f"\n⚠️  Excluding {len(excluded_agents)} random agents from training:")
+            for name in excluded_agents:
+                print(f"   - {name}")
+            print(f"\n   Reason: Random agents lack consistent patterns, which degrades classifier accuracy.")
+            print(f"   The adaptive agent will fall back to the generalist when facing these agents.\n")
+        
+        opponent_classes = filtered_classes
     
     # Resolve path relative to this module's directory (liars_dice/agents/adapter_agent/)
     save_path = Path(save_path)
@@ -275,6 +310,7 @@ def train_neural_classifier(
     # Phase 1: Collect trajectories
     print(f"Phase 1: Collecting Trajectories from {len(opponent_names)} Opponents")
     print(f"  Games per opponent: {samples_per_opponent}")
+    print(f"  Progressive sampling: Enabled (5, 7, 10, full length)")
     print("="*80 + "\n")
     
     all_trajectories = []
@@ -302,7 +338,7 @@ def train_neural_classifier(
     print(f"Phase 2: Training LSTM Classifier")
     print(f"  Architecture: {CLASSIFIER_CONFIG['num_lstm_layers']}-layer LSTM")
     print(f"  Hidden dim: {CLASSIFIER_CONFIG['hidden_dim']}")
-    print(f"  Epochs: {CLASSIFIER_CONFIG['num_epochs']}")
+    print(f"  Epochs: {CLASSIFIER_TRAINING_CONFIG['num_epochs']}")
     print("="*80 + "\n")
     
     # Create dataset and dataloaders
@@ -313,19 +349,19 @@ def train_neural_classifier(
     )
     
     # Split train/val
-    train_size = int(CLASSIFIER_CONFIG["train_val_split"] * len(dataset))
+    train_size = int(CLASSIFIER_TRAINING_CONFIG["train_val_split"] * len(dataset))
     val_size = len(dataset) - train_size
     train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
     
     train_loader = DataLoader(
         train_dataset,
-        batch_size=CLASSIFIER_CONFIG["batch_size"],
+        batch_size=CLASSIFIER_TRAINING_CONFIG["batch_size"],
         shuffle=True,
         num_workers=0
     )
     val_loader = DataLoader(
         val_dataset,
-        batch_size=CLASSIFIER_CONFIG["batch_size"],
+        batch_size=CLASSIFIER_TRAINING_CONFIG["batch_size"],
         shuffle=False,
         num_workers=0
     )
@@ -338,33 +374,33 @@ def train_neural_classifier(
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(
         tracker.model.parameters(),
-        lr=CLASSIFIER_CONFIG["learning_rate"],
-        weight_decay=CLASSIFIER_CONFIG["weight_decay"]
+        lr=CLASSIFIER_TRAINING_CONFIG["learning_rate"],
+        weight_decay=CLASSIFIER_TRAINING_CONFIG["weight_decay"]
     )
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode='min', patience=3, factor=0.5
     )
     
     # TensorBoard writer for monitoring
-    tensorboard_dir = Path(PATH_CONFIG["tensorboard_log_dir"])
+    tensorboard_dir = Path(PATH_CONFIG["classifier_log_dir"])
     tensorboard_dir.mkdir(parents=True, exist_ok=True)
     writer = SummaryWriter(log_dir=str(tensorboard_dir))
     
     # Training loop with convergence monitoring
     best_val_loss = float('inf')
     patience_counter = 0
-    min_improvement = CLASSIFIER_CONFIG["min_loss_improvement"]
+    min_improvement = CLASSIFIER_TRAINING_CONFIG["min_loss_improvement"]
     
-    print(f"TensorBoard: tensorboard --logdir={PATH_CONFIG['tensorboard_log_dir']}\n")
+    print(f"TensorBoard: tensorboard --logdir={PATH_CONFIG['classifier_log_dir']}\n")
     
-    for epoch in range(CLASSIFIER_CONFIG["num_epochs"]):
+    for epoch in range(CLASSIFIER_TRAINING_CONFIG["num_epochs"]):
         # Train
         tracker.train_mode()
         train_loss = 0.0
         train_correct = 0
         train_total = 0
         
-        for batch in tqdm(train_loader, desc=f"Epoch {epoch+1}/{CLASSIFIER_CONFIG['num_epochs']}"):
+        for batch in tqdm(train_loader, desc=f"Epoch {epoch+1}/{CLASSIFIER_TRAINING_CONFIG['num_epochs']}"):
             features = batch["features"].to(device)
             mask = batch["mask"].to(device)
             labels = batch["label"].to(device)
@@ -438,8 +474,8 @@ def train_neural_classifier(
         else:
             # No significant improvement
             patience_counter += 1
-            print(f"  → No significant improvement (patience: {patience_counter}/{CLASSIFIER_CONFIG['early_stopping_patience']})")
-            if patience_counter >= CLASSIFIER_CONFIG["early_stopping_patience"]:
+            print(f"  → No significant improvement (patience: {patience_counter}/{CLASSIFIER_TRAINING_CONFIG['early_stopping_patience']})")
+            if patience_counter >= CLASSIFIER_TRAINING_CONFIG["early_stopping_patience"]:
                 print(f"\nEarly stopping: Loss converged (no improvement > {min_improvement:.4f} for {patience_counter} epochs)")
                 writer.add_text('Training/early_stop_reason', f'Loss converged at epoch {epoch+1}', epoch)
                 break
@@ -454,7 +490,7 @@ def train_neural_classifier(
     print(f"\n✓ Classifier training complete!")
     print(f"  Best validation loss: {best_val_loss:.4f}")
     print(f"  Model saved to: {save_path}")
-    print(f"  TensorBoard logs: {PATH_CONFIG['tensorboard_log_dir']}\n")
+    print(f"  TensorBoard logs: {PATH_CONFIG['classifier_log_dir']}\n")
     
     return tracker
 
@@ -474,9 +510,7 @@ def evaluate_specialist_experts(
         
     Returns:
         Dict mapping opponent names to (wins, total, win_rate) tuples
-    """
-    from liars_dice.agents.ppo_agent import PPOAgent
-    
+    """    
     print("\n" + "="*80)
     print("EVALUATING SPECIALIST EXPERTS")
     print("="*80 + "\n")

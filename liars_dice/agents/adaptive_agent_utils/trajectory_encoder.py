@@ -11,7 +11,7 @@ from collections import Counter
 
 from liars_dice.core.actions import BidAction, CallLiarAction
 from liars_dice.core.bid import Bid
-from liars_dice.agents.adapter_agent.config import ENCODER_CONFIG
+from liars_dice.agents.adaptive_agent_utils.config import ENCODER_CONFIG
 
 
 class TrajectoryEncoder:

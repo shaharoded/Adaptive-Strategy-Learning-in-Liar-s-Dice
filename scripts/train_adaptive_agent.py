@@ -27,26 +27,14 @@ from typing import Optional
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from liars_dice.core.config import GameConfig
-from liars_dice.agents.random_agent import RandomAgent, CautiousRandomAgent, AggressiveRandomAgent
-from liars_dice.agents.heuristic_agent import (
-    ConservativeAgent, 
-    AggressiveAgent,
-    ProbabilityMinRaiseAgent,
-    ProbabilityMaxRaiseAgent,
-    MinRaiseAgent,
-    MaxRaiseAgent,
-    MirrorAgent,
-    MaxCountBidAgent
-)
-from liars_dice.agents.bayesian_agent import BayesianAgent
 from liars_dice.agents.ppo_agent import PPOAgent
 from liars_dice.agents import AGENT_MAP
-from liars_dice.agents.adapter_agent.adaptive_training import (
+from liars_dice.agents.adaptive_agent_utils.adaptive_training import (
     train_specialist_expert,
     train_neural_classifier,
     evaluate_specialist_experts
 )
-from liars_dice.agents.adapter_agent.config import EXPERT_CONFIG, CLASSIFIER_CONFIG, PATH_CONFIG
+from liars_dice.agents.adaptive_agent_utils.config import EXPERT_CONFIG, CLASSIFIER_CONFIG, PATH_CONFIG
 
 
 def get_opponent_classes():

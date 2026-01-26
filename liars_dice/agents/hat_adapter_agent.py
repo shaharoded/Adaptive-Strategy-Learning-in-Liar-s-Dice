@@ -7,7 +7,7 @@ This is a strategy optimizer Mixture-of-Experts implementation, designed to pick
 
 from liars_dice.agents import register_agent
 from .base import Agent, UntrainedAgentException
-from liars_dice.agents.hat_adapter_agent.memory import Memory
+from liars_dice.agents.hat_adapter_agent_utils.memory import Memory
 from liars_dice.agents.random_agent import RandomAgent
 from liars_dice.agents.bayesian_agent import BayesianAgent
 from liars_dice.agents.heuristic_agent import ConservativeAgent

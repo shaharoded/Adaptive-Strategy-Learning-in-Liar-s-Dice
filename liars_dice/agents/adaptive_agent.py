@@ -1,34 +1,30 @@
 """
-adaptive_agent.py
+Adaptive Agent with Neural Opponent Identification
 
-Neural LSTM-based Adaptive Agent that identifies opponents and selects specialist experts.
-
-This agent:
-1. Maintains a neural belief tracker that uses LSTM to process action trajectories
-2. Updates beliefs at each step based on observed opponent actions
-3. Once confident about opponent identity, switches to the specialist expert
-4. Falls back to generalist PPO agent if uncertain
+Uses LSTM-based classifier to identify opponent type from action trajectories,
+then switches to specialist PPO expert trained against that opponent.
+Falls back to generalist PPO (trained by curriculum) when uncertain.
 """
 
 from pathlib import Path
 from typing import Optional, Dict
 
+from liars_dice.agents import register_agent
 from liars_dice.agents.base import Agent, UntrainedAgentException
 from liars_dice.agents.ppo_agent import PPOAgent
-from liars_dice.agents import register_agent
-from liars_dice.agents.adaptive_agent.adaptive_training import load_neural_classifier
-from liars_dice.agents.adaptive_agent.config import IDENTIFICATION_CONFIG, PATH_CONFIG
+from liars_dice.agents.adaptive_agent_utils.adaptive_training import load_neural_classifier
+from liars_dice.agents.adaptive_agent_utils.config import CLASSIFIER_CONFIG, PATH_CONFIG
+from liars_dice.core.actions import BidAction, CallLiarAction
 
 
 @register_agent("adaptive")
 class AdaptiveAgent(Agent):
     """
-    Adaptive agent that uses neural LSTM to identify opponents
-    and selects specialist PPO experts accordingly.
+    Adaptive agent with LSTM-based opponent identification.
     
-    The agent uses an LSTM-based classifier to process action trajectories
-    and predict opponent type. Once confident, it switches to the specialist
-    expert trained against that opponent type.
+    Maintains belief distribution over opponent types and selects specialist
+    PPO experts accordingly. Uses manual history synchronization to ensure
+    experts have correct context.
     """
     
     def __init__(
@@ -69,7 +65,7 @@ class AdaptiveAgent(Agent):
             self.generalist_path = (Path(__file__).parent / self.generalist_path).resolve()
         
         # Load config defaults if not provided
-        self.min_observations = min_observations or IDENTIFICATION_CONFIG["min_observations"]
+        self.min_observations = min_observations or CLASSIFIER_CONFIG["min_observations"]
         self.device = device
         
         # Load neural classifier
@@ -81,9 +77,9 @@ class AdaptiveAgent(Agent):
                 "Train the classifier first using: python scripts/train_adaptive_agent.py --train-classifier"
             )
         
-        # Load generalist agent (fallback)
+        # Load generalist agent (fallback) - disable auto-sync (use manual sync only)
         try:
-            self.generalist = PPOAgent(model_path=str(self.generalist_path))
+            self.generalist = PPOAgent(model_path=str(self.generalist_path), disable_auto_sync=True)
         except Exception as e:
             raise UntrainedAgentException(
                 f"Generalist PPO agent not found at {self.generalist_path}: {e}"
@@ -98,6 +94,7 @@ class AdaptiveAgent(Agent):
         self.observations_count = 0
         self.round_index = -1
         self.last_public_state = None
+        self.round_action_history = []  # Track actions in current round for expert sync
         
         print(f"AdaptiveAgent initialized (Neural LSTM):")
         print(f"  Min observations: {self.min_observations}")
@@ -112,11 +109,12 @@ class AdaptiveAgent(Agent):
             expert_path = self.experts_dir / f"expert_{safe_name}"
             
             try:
-                expert = PPOAgent(model_path=str(expert_path))
+                # Load with disable_auto_sync=True so we can manually manage history
+                expert = PPOAgent(model_path=str(expert_path), disable_auto_sync=True)
                 self.experts[opp_type] = expert
-                print(f"  ✓ Loaded expert for {opp_type}")
+                print(f"  [OK] Loaded expert for {opp_type}")
             except Exception as e:
-                print(f"  ⚠️  Warning: Could not load expert for {opp_type}: {e}")
+                print(f"  [WARNING] Could not load expert for {opp_type}: {e}")
                 # Continue without this expert - will use generalist as fallback
     
     def reset(self):
@@ -126,45 +124,104 @@ class AdaptiveAgent(Agent):
         self.observations_count = 0
         self.round_index = -1
         self.last_public_state = None
+        self.round_action_history = []
+        
+        # Reset all expert agents (clear their history buffers)
+        self.generalist.reset()
+        for expert in self.experts.values():
+            expert.reset()
+        for agent in [self.generalist, *self.experts.values()]:
+            self._clear_agent_buffers(agent, -1)
     
     def choose_action(self, view):
         """
-        Choose action using adaptive expert selection with neural belief tracking.
+        Chooses an action using adaptive expert selection based on neural belief tracking.
         
-        Process:
-        1. Receive opponent actions via ActionTrackerWrapper's record_opponent_action() calls
-        2. Update neural belief tracker with opponent's trajectory
-        3. Select expert based on current beliefs (argmax after min_observations)
-        4. Delegate action choice to selected expert (or generalist)        
+        This method manages the transition between the generalist agent and specialized
+        experts. It ensures that whenever an expert is called—especially mid-round or 
+        when playing as Player 1 (P1)—the expert's internal history buffer and bid 
+        tracking are perfectly synchronized with the observed game state.
+        
+        Args:
+            view (dict): The current game view provided by the engine.
+            
+        Returns:
+            Action: The BidAction or CallLiarAction selected by the active agent.
         """
-        # Extract state information
         public = view["public"]
         
-        # Check for new round (reset if needed)
+        # 1. Detect Round/Game Transitions
+        if self.round_index != -1 and public.round_index == 0 and self.round_index != 0:
+            # Full Match Reset
+            self.reset()
         if public.round_index != self.round_index:
-            if self.round_index != -1 and public.round_index == 0:
-                # New game - reset beliefs
-                self.reset()
-            self.round_index = public.round_index
-        
-        # Select expert based on current beliefs (opponent actions recorded via wrapper)
+            # New round detected from our perspective
+            self._handle_round_transition(public.round_index)
+            
+        # Store state for sync
+        self.last_public_state = public
+
+        # 2. Select Agent
         selected_agent = self._select_agent()
         
-        # Delegate action to selected agent
+        # 3. Critical Sync: Rebuild the expert's view of the world
+        self._sync_history_to_agent(selected_agent, public)
+        
+        # Force the expert to match the current table bid
+        if hasattr(selected_agent, 'set_last_bid'):
+            selected_agent.set_last_bid(public.last_bid)
+        
+        # 4. Action
         action = selected_agent.choose_action(view)
         
+        # 5. Record My Action
+        self.round_action_history.append({
+            'is_me': True,
+            'action': action,
+            'is_bid': isinstance(action, BidAction),
+            'bid': action.bid if isinstance(action, BidAction) else None
+        })
+        
+        # If I called liar, round is over. Clear history so Round N+1 starts clean.
+        if isinstance(action, CallLiarAction):
+            self.round_action_history = []
+        
         return action
+
+    def _clear_agent_buffers(self, agent: Agent, round_index: int):
+        """Hard reset of an agent's internal buffers for a given round."""
+        if hasattr(agent, 'history_buffer'):
+            agent.history_buffer = []
+        if hasattr(agent, 'encoder') and hasattr(agent.encoder, 'history_buffer'):
+            agent.encoder.history_buffer = []
+        if hasattr(agent, 'last_bid_on_table'):
+            agent.last_bid_on_table = None
+        if hasattr(agent, 'last_round_idx'):
+            agent.last_round_idx = round_index
+
+    def _handle_round_transition(self, new_round_index: int):
+        """Clear per-round buffers when a new round is observed."""
+        self.round_index = new_round_index
+        self.round_action_history = []
+        for agent in [self.generalist, *self.experts.values()]:
+            self._clear_agent_buffers(agent, new_round_index)
     
     def record_opponent_action(self, action, game_state: Dict, revealed_dice=None):
         """
-        Directly record an opponent action that was observed.
-        This is the proper way to update beliefs - not by inferring from state changes.
+        Directly record an opponent action that was observed in order to update beliefs.
         
         Args:
             action: The opponent's action (BidAction or CallLiarAction)
             game_state: Game state context
             revealed_dice: Revealed dice if round ended
         """
+        # Detect round transitions early (P1 opener comes here before our choose_action)
+        incoming_round = game_state.get("round_index", self.round_index)
+        if self.round_index != -1 and incoming_round == 0 and self.round_index != 0:
+            self.reset()
+        if incoming_round != self.round_index:
+            self._handle_round_transition(incoming_round)
+
         # Add to trajectory
         self.belief_tracker.update_belief(
             action,
@@ -173,6 +230,54 @@ class AdaptiveAgent(Agent):
             revealed_dice=revealed_dice
         )
         self.observations_count += 1
+        
+        # Record in round history for expert sync
+        self.round_action_history.append({
+            'is_me': False,
+            'action': action,
+            'is_bid': isinstance(action, BidAction),
+            'bid': action.bid if isinstance(action, BidAction) else None
+        })
+        
+        # If opponent called liar, round ended - clear history for next round
+        if isinstance(action, CallLiarAction):
+            self.round_action_history = []
+    
+    def _sync_history_to_agent(self, agent: Agent, public):
+        """
+        Forcefully overwrites the agent's history buffer AND its encoder's internal state.
+        This solves the P1 Blindness by pushing the opponent's first bid into the expert.
+        
+        Args:
+            agent: The PPO agent to sync history to
+            public: Public game state (for bid tracking)
+        """
+        if not hasattr(agent, 'history_buffer'):
+            return
+        if not hasattr(agent, 'encoder') or agent.encoder is None:
+            return
+        
+        max_bid_qty = agent.encoder.max_bid_qty
+        synced_history = []
+        for action_record in self.round_action_history:
+            is_me = 1.0 if action_record['is_me'] else 0.0
+            is_bid = 1.0 if action_record['is_bid'] else 0.0
+            bid = action_record['bid']
+            qty = bid.quantity / max_bid_qty if bid else 0.0
+            face = bid.face / 6.0 if bid else 0.0
+            synced_history.append([is_me, is_bid, qty, face])
+        synced_copy = [list(v) for v in synced_history]
+
+        # Overwrite both locations to ensure no stale data remains
+        agent.history_buffer = synced_copy
+        if hasattr(agent, 'encoder'):
+            # This forces the HistoryObservationEncoder to use our NEW data for its next obs
+            agent.encoder.history_buffer = [list(v) for v in synced_copy]
+        if hasattr(agent, 'last_round_idx'):
+            agent.last_round_idx = self.round_index
+        if hasattr(agent, 'last_bid_on_table'):
+            agent.last_bid_on_table = public.last_bid
+
     
     def _select_agent(self) -> Agent:
         """

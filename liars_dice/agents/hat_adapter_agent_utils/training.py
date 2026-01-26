@@ -13,7 +13,7 @@ from liars_dice.agents.bayesian_agent import BayesianAgent
 from liars_dice.agents.heuristic_agent import ConservativeAgent
 from liars_dice.agents.nash_agent import NashCFRAgent
 from liars_dice.agents.base import UntrainedAgentException
-from liars_dice.agents.hat_adapter_agent.memory import Memory
+from liars_dice.agents.hat_adapter_agent_utils.memory import Memory
 from liars_dice.core.actions import BidAction, CallLiarAction
 from liars_dice.core.bid import Bid
 from liars_dice.core.engine import IllegalMoveError

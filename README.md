@@ -31,7 +31,7 @@ The engine models the abstract game of Liar's Dice, allowing you to:
 - gymnasium
 - stable-baselines3
 - sb3-contrib
-- torch (PyTorch) — required for PPO (inference and training) and used by some training utilities (e.g., TensorBoard helper). Install CPU-only or CUDA-enabled builds as appropriate.
+- torch (PyTorch) — required for PPO (inference and training) and used by some training utilities (e.g., TensorBoard helper). Install CPU-only.
 - tensorboard
 - pandas (for data export/analysis)
 - matplotlib (optional, for plotting)
@@ -46,7 +46,7 @@ pip install numpy gymnasium stable-baselines3 sb3-contrib torch tensorboard pand
 Notes:
 - `torch` is required to load and run the PPO model (stable-baselines3/sb3_contrib use PyTorch). It is also imported by the Nash/CFR training utilities for TensorBoard logging in this repository, so `torch` must be present to import those modules as written.
 - If you only want to run the core engine and rule-based agents (no RL), you can omit `stable-baselines3`, `sb3-contrib`, and `torch`.
-- For GPU acceleration, install a CUDA-enabled PyTorch build following the instructions at https://pytorch.org/.
+- You can leave the GPU at home. All models are rather quick to learn and very lightweight. The only exception - MCCFR, where you'll probably need a (CPU) cluster if you want to finish training before next year.
 
 ## Installation
 
@@ -433,7 +433,7 @@ The **Adaptive Agent** combines **Bayesian opponent modeling** with **specialist
 
 The system consists of:
 
-1. **Specialist Experts**: PPO agents trained to achieve 99%+ win rate against specific opponents
+1. **Specialist Experts**: PPO agents trained to achieve 99%+ win rate against specific opponents (it's way quicker than you would expect)
 2. **Neural Belief Tracker**: LSTM-based opponent classifier that updates beliefs from observed actions
 3. **Generalist Fallback**: General-purpose PPO agent for when opponent identity is uncertain
 
@@ -456,6 +456,8 @@ python scripts/train_adaptive_agent.py --train-all
 - `--train-classifier --classifier-samples 1000`: Train/retrain LSTM classifier only
 - `--opponent bayesian`: Train single specialist expert (e.g., "bayesian")
 - `--evaluate-experts`: Evaluate performance of all trained experts
+
+>> Note: For classification stability, this classification omits the random agents as opponents. This is controllable via `adaptive_agent\config`.
 
 **What This Does:**
 1. Trains a specialist expert for each opponent (warm-started from generalist)
@@ -506,56 +508,26 @@ agent = AGENT_MAP["adaptive"]
 #### How It Works
 
 1. **Online Belief Update**: At each opponent action, extracts features and updates belief distribution using Bayes' rule
-2. **Expert Selection**: Once confidence exceeds threshold (default 70%) and minimum observations (5 actions) reached, switches to specialist expert
+2. **Expert Selection**: Once minimum observations (5 actions) reached, switches to specialist expert using argmax on the belief distribution.
 3. **Fallback**: Uses generalist agent during uncertainty phase
-4. **Feature Extraction**: 12-dimensional features from bid quantity, face, aggressiveness, probability, etc.
-
-#### Parameters
-
-**AdaptiveAgent Constructor:**
-
-```python
-AdaptiveAgent(
-    confidence_threshold=0.7,   # Min belief to commit to expert (70%)
-    min_observations=5,          # Min actions before prediction
-    neural_classifier_path=None, # Auto-loads from config
-    experts_dir=None,            # Auto-loads from config
-    generalist_path=None         # Auto-loads from config
-)
-```
-
-#### Performance
-
-**Specialist Expert Win Rates:** Each expert achieves 99%+ against its specific opponent
-
-**Adaptive Agent Performance:**
-- Against known opponents: 95-99% (once identified)
-- First few rounds: 70-85% (using generalist)
-- Against unknown opponents: Falls back to generalist (~70-80%)
 
 #### Monitoring Training
 
 ```bash
-tensorboard --logdir=./runs/adaptive_agent/classifier/
+tensorboard --logdir=./runs/adaptive_agent/
 ```
 
-View LSTM training curves, convergence metrics, loss/accuracy tracking.
+View LSTM training curves, convergence metrics, loss/accuracy tracking, and experts training curves.
 
-#### Troubleshooting
+#### Monitoring Adaptive Performance
 
-**LSTM classifier not found:**
+An additional supplied script will help in analyzing the adapter's win rate compared to the source expert's win rate against some or all available opponents
+
 ```bash
-python scripts/train_adaptive_agent.py --train-classifier
+python scripts/diagnose_adaptive.py               # Test against all opponents
+python scripts/diagnose_adaptive.py GeneralistPPO # Test against specific opponent
+python scripts/diagnose_adaptive.py --list        # List available opponents
 ```
-
-**Experts not found:**
-```bash
-python scripts/train_adaptive_agent.py --train-all
-```
-
-**Low identification accuracy:**
-- Increase classifier samples: `--classifier-samples 2000`
-- Lower confidence threshold: `AdaptiveAgent(confidence_threshold=0.5)`
 
 ---
 

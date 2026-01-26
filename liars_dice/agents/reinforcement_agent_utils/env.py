@@ -7,7 +7,7 @@ from liars_dice.core.config import GameConfig
 from liars_dice.core.bid import Bid
 from liars_dice.core.actions import CallLiarAction, BidAction
 from liars_dice.core.reward import get_reward
-from liars_dice.agents.reinforcement_agent.encoder import HistoryObservationEncoder
+from liars_dice.agents.reinforcement_agent_utils.encoder import HistoryObservationEncoder
 
 
 class LiarsDiceGymEnv(gym.Env):

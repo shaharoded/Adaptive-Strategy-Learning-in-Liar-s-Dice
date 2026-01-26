@@ -1,145 +1,151 @@
+"""
+PPO Agent for Liar's Dice
+
+Proximal Policy Optimization agent using MaskablePPO from sb3-contrib.
+Uses history-based observation encoding and action masking for valid bids.
+Supports both training and inference modes.
+"""
+
 import os
-from pathlib import Path
 import numpy as np
+from pathlib import Path
 from sb3_contrib import MaskablePPO
 from sb3_contrib.common.wrappers import ActionMasker
 from stable_baselines3.common.monitor import Monitor
-from stable_baselines3.common.callbacks import CheckpointCallback, BaseCallback
+from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.logger import configure
 
 from . import register_agent
 from liars_dice.agents.base import Agent, UntrainedAgentException
-from liars_dice.core.bid import Bid
-from liars_dice.core.actions import CallLiarAction, BidAction
-from liars_dice.agents.reinforcement_agent.encoder import HistoryObservationEncoder
-from liars_dice.agents.reinforcement_agent.config import MODEL_CONFIG, TRAINING_CONFIG
-from liars_dice.agents.reinforcement_agent.env import LiarsDiceGymEnv 
+from liars_dice.agents.reinforcement_agent_utils.encoder import HistoryObservationEncoder
+from liars_dice.agents.reinforcement_agent_utils.config import MODEL_CONFIG, TRAINING_CONFIG
+from liars_dice.agents.reinforcement_agent_utils.env import LiarsDiceGymEnv
+from liars_dice.core.actions import BidAction, CallLiarAction
+from liars_dice.core.bid import Bid 
 
 
 @register_agent("rl_ppo")
 class PPOAgent(Agent):
     """
-    Inference Wrapper for the PPO Model.
-    Inherits from Agent to be compatible with GameEngine and Tournament scripts.
-    This agent uses a HistoryObservationEncoder to encode observations, and loads it's weights from agents/weights/ppo_model.zip.
+    PPO agent for Liar's Dice using history-based observations.
+    
+    Supports two modes:
+    - Auto-sync (disable_auto_sync=False): Automatically tracks opponent actions
+    - Manual-sync (disable_auto_sync=True): Relies on external history management (for adaptive agent)
     """
-    def __init__(self, model_path=None, stochastic=False):
-        # Default to the path in config if none provided
+    
+    def __init__(self, model_path=None, stochastic=False, disable_auto_sync=False):
+        """
+        Args:
+            model_path: Path to trained model (.zip). Uses default from config if None.
+            stochastic: Use stochastic policy (training) vs deterministic (evaluation).
+            disable_auto_sync: Disable auto history tracking (for use with adaptive agent).
+        """
+        # Resolve model path
         if model_path is None:
             model_path = TRAINING_CONFIG["model_save_path"]
-
-        # Resolve model path robustly: allow relative paths but anchor to this file's directory
+        
         model_path = Path(model_path)
         if model_path.suffix != ".zip":
             model_path = model_path.with_suffix(".zip")
         if not model_path.is_absolute():
             model_path = (Path(__file__).parent / model_path).resolve()
-
-        self.encoder = None  # Will init lazily or via setup
-        self.model = None
-        self.history_buffer = []
-        self.last_round_idx = -1
-        self.last_bid_on_table = None
-        self.stochastic = stochastic  # Whether to use stochastic policy (for training diversity)
         
-        # Load Model
+        # Load model
         full_path = str(model_path)
         if os.path.exists(full_path):
             self.model = MaskablePPO.load(full_path)
         else:
             raise UntrainedAgentException(
-                f"PPO model not found at {full_path}. Train the model first using scripts/train_ppo_curriculum.py"
+                f"PPO model not found at {full_path}. Train using scripts/train_ppo_curriculum.py"
             )
-
-        # Init Encoder params
-        # Note: We don't have game config yet (choose_action receives view later)
-        # We assume standard 5 dice for now or set it on first call
-        self.total_dice = 5 
-        self.encoder = HistoryObservationEncoder(total_dice=self.total_dice, history_len=MODEL_CONFIG["history_length"])
-
+        
+        # Initialize state
+        self.encoder = HistoryObservationEncoder(total_dice=5, history_len=MODEL_CONFIG["history_length"])
+        self.history_buffer = []
+        self.last_round_idx = -1
+        self.last_bid_on_table = None
+        self.stochastic = stochastic
+        self.disable_auto_sync = disable_auto_sync
+    
     def choose_action(self, view):
+        """Select action using trained PPO policy."""
         if self.model is None:
             raise RuntimeError("PPOAgent has no loaded model.")
 
-        # 1. Sync History (Detect Opponent Moves)
-        self._sync_history(view)
-
-        # 2. Prepare Data for Encoder
-        # View is a dict with keys: player_id (optional), public, my_dice, config
-        my_dice = view["my_dice"]  # tuple of dice values
-        my_hand = {}
-        for die in my_dice:
-            my_hand[die] = my_hand.get(die, 0) + 1
+        # Auto-sync history if enabled
+        if not self.disable_auto_sync:
+            self._sync_history(view)
         
+        # Prepare observation
+        my_dice = view["my_dice"]
+        my_hand = {die: list(my_dice).count(die) for die in set(my_dice)}
         my_dice_count = len(my_dice)
         
-        # Get opponent dice count from public state
         public = view["public"]
-        player_id = view.get("player_id", 0)  # Default to 0 if not provided
+        player_id = view.get("player_id", 0)
         opp_dice_count = sum(c for i, c in enumerate(public.dice_counts) if i != player_id)
         
-        # 3. Encode - Use the history buffer maintained by this agent
-        # Temporarily swap encoder's history buffer with ours
-        old_buffer = self.encoder.history_buffer
         self.encoder.history_buffer = self.history_buffer
         obs = self.encoder.encode(my_hand, my_dice_count, opp_dice_count)
-        self.encoder.history_buffer = old_buffer
-
-        # 4. Mask
-        mask = self._get_action_mask(view)
-
-        # 5. Predict
-        action_idx, _ = self.model.predict(obs, action_masks=mask, deterministic=not self.stochastic)
         
-        # 6. Decode
+        # Predict action
+        mask = self._get_action_mask(view)
+        action_idx, _ = self.model.predict(obs, action_masks=mask, deterministic=not self.stochastic)
         game_action = self._decode_action(action_idx)
-
-        # 7. Record My Own Action
-        self._record_action(is_me=True, action=game_action)
-        public = view["public"]
-        self.last_bid_on_table = public.last_bid 
+        
+        # Record action if auto-sync enabled
+        if not self.disable_auto_sync:
+            self._record_action(is_me=True, action=game_action)
+            self.last_bid_on_table = public.last_bid
         
         return game_action
+    
+    def set_last_bid(self, bid):
+        """Manually set bid tracker (used by adaptive agent)."""
+        self.last_bid_on_table = bid
+
+    def reset(self):
+        """Reset agent state for new game."""
+        self.history_buffer = []
+        self.last_round_idx = -1
+        self.last_bid_on_table = None
 
     def _sync_history(self, view):
-        # A. New Round Reset
+        """Auto-detect and record opponent actions from state changes."""
         public = view["public"]
+        
+        # Reset on new round
         if public.round_index != self.last_round_idx:
             self.history_buffer = []
             self.last_round_idx = public.round_index
             self.last_bid_on_table = None
             return
 
-        # B. Detect Opponent Move
+        # Detect opponent bid
         current_bid = public.last_bid
-        if current_bid != self.last_bid_on_table:
-            if current_bid is not None:
-                # Opponent placed a bid
-                opp_action = BidAction(Bid(quantity=current_bid.quantity, face=current_bid.face))
-                self._record_action(is_me=False, action=opp_action)
-            else:
-                # Bid is None but last was not None -> Round reset (Handled by A) or error
-                pass
+        if current_bid != self.last_bid_on_table and current_bid is not None:
+            opp_action = BidAction(Bid(quantity=current_bid.quantity, face=current_bid.face))
+            self._record_action(is_me=False, action=opp_action)
+        
         self.last_bid_on_table = current_bid
 
     def _record_action(self, is_me, action_type=None, bid_obj=None, action=None):
-        # Support both action object and separate parameters
+        """Encode action into history vector."""
         if action is not None:
-            action_type = type(action).__name__  # "BidAction" or "CallLiarAction"
+            action_type = type(action).__name__
             bid_obj = action.bid if action_type == "BidAction" else None
         
-        # Encode action into history vector
         is_bid = 1.0 if action_type == "BidAction" else 0.0
         qty = bid_obj.quantity / self.encoder.max_bid_qty if bid_obj else 0.0
         face = bid_obj.face / 6.0 if bid_obj else 0.0
         is_me_val = 1.0 if is_me else 0.0
         
-        h_vec = [is_me_val, is_bid, qty, face]
-        self.history_buffer.append(h_vec)
+        self.history_buffer.append([is_me_val, is_bid, qty, face])
 
     def _get_action_mask(self, view):
-        # Must match Gym Env logic EXACTLY
-        max_qty = self.encoder.max_bid_qty # derived from total dice
+        """Generate mask for valid actions."""
+        max_qty = self.encoder.max_bid_qty
         n_actions = 1 + (max_qty * 6)
         mask = np.zeros(n_actions, dtype=bool)
         
@@ -147,7 +153,7 @@ class PPOAgent(Agent):
         curr = public.last_bid
         
         if curr is not None:
-            mask[0] = True # Call Liar
+            mask[0] = True  # Call Liar always valid if bid exists
             
         for q in range(1, max_qty + 1):
             for f in range(1, 7):
@@ -159,7 +165,9 @@ class PPOAgent(Agent):
         return mask
 
     def _decode_action(self, idx):
-        if idx == 0: return CallLiarAction()
+        """Convert action index to game action."""
+        if idx == 0:
+            return CallLiarAction()
         adj = int(idx) - 1
         return BidAction(Bid((adj // 6) + 1, (adj % 6) + 1))
 
@@ -260,7 +268,7 @@ class WinRateCallback(BaseCallback):
 
 def train_ppo_agent(opponent_cls, game_config, load_path=None, save_name="ppo_model", 
                    total_timesteps=None, enable_early_stopping=True, 
-                   win_rate_threshold=0.95):
+                   win_rate_threshold=0.95, log_dir=None):
     """
     Trains the PPO Agent against a specific opponent class.
     Supports curriculum learning by allowing continued training from a checkpoint.
@@ -273,6 +281,7 @@ def train_ppo_agent(opponent_cls, game_config, load_path=None, save_name="ppo_mo
         total_timesteps: Number of timesteps to train. If None, uses config default.
         enable_early_stopping: If True, stops when win_rate_threshold is reached.
         win_rate_threshold: Win rate threshold for early stopping (default: 0.95 = 95%).
+        log_dir: Optional TensorBoard log directory. If None, uses config default.
     
     Returns:
         str: Path to the saved model.
@@ -286,6 +295,9 @@ def train_ppo_agent(opponent_cls, game_config, load_path=None, save_name="ppo_mo
     
     if total_timesteps is None:
         total_timesteps = TRAINING_CONFIG["total_timesteps"]
+    
+    if log_dir is None:
+        log_dir = TRAINING_CONFIG["log_dir"]
     
     # 1. Setup Environment with ActionMasker wrapper
     base_env = LiarsDiceGymEnv(game_config, opponent_cls)
@@ -306,7 +318,7 @@ def train_ppo_agent(opponent_cls, game_config, load_path=None, save_name="ppo_mo
         model = MaskablePPO.load(load_path, env=env)
         # Use consistent opponent name for TensorBoard organization
         tb_log_name = opponent_name
-        model.tensorboard_log = TRAINING_CONFIG["log_dir"]
+        model.tensorboard_log = log_dir
     else:
         print("Initializing new PPO model...", flush=True)
         print(f"Training for {total_timesteps} timesteps\n", flush=True)
@@ -316,7 +328,7 @@ def train_ppo_agent(opponent_cls, game_config, load_path=None, save_name="ppo_mo
             MODEL_CONFIG["policy_type"],
             env,
             verbose=0,
-            tensorboard_log=TRAINING_CONFIG["log_dir"],
+            tensorboard_log=log_dir,
             learning_rate=MODEL_CONFIG["learning_rate"],
             gamma=MODEL_CONFIG["gamma"],
             batch_size=MODEL_CONFIG["batch_size"],
