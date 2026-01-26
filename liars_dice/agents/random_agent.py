@@ -70,7 +70,7 @@ class RandomAgent(Agent):
             return BidAction(Bid(q, f))
 
         # Guard-rail 1: call liar deterministically if the bid is impossible
-        if self.call_liar_deterministic(my_dice, last, estimated_total):
+        if self.is_opponent_bid_provably_false(last, my_dice, estimated_total, config):
             return CallLiarAction()
 
         # Guard-rail 2: increase chance of calling liar as the bidding goes on
@@ -118,10 +118,10 @@ class RandomAgent(Agent):
             q = min(new_q, max_qty)
             f = last.face
         
-        # Final validation: ensure bid is actually higher
+        # Final validation: ensure bid is actually higher and not universally impossible
         proposed_bid = Bid(q, f)
-        if not proposed_bid.is_higher_than(last):
-            # If we couldn't create a higher bid, call liar instead
+        if not proposed_bid.is_higher_than(last) or self.is_bid_universally_impossible(proposed_bid, estimated_total, config):
+            # If we couldn't create a higher valid bid, call liar instead
             return CallLiarAction()
         
         return BidAction(proposed_bid)

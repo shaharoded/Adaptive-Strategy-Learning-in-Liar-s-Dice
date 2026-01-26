@@ -48,8 +48,17 @@ class PPOAgent(Agent):
         model_path = Path(model_path)
         if model_path.suffix != ".zip":
             model_path = model_path.with_suffix(".zip")
+
+        # Resolve relative paths robustly:
+        # - If the path already starts with "liars_dice/...", anchor it at repo root (one level above liars_dice)
+        # - Otherwise, treat it as relative to this agents/ directory
         if not model_path.is_absolute():
-            model_path = (Path(__file__).parent / model_path).resolve()
+            agents_dir = Path(__file__).resolve().parent
+            repo_root = agents_dir.parents[1]
+            if model_path.parts and model_path.parts[0] == "liars_dice":
+                model_path = (repo_root / model_path).resolve()
+            else:
+                model_path = (agents_dir / model_path).resolve()
         
         # Load model
         full_path = str(model_path)
@@ -89,7 +98,15 @@ class PPOAgent(Agent):
         self.encoder.history_buffer = self.history_buffer
         obs = self.encoder.encode(my_hand, my_dice_count, opp_dice_count)
         
-        # Predict action
+        # First check if opponent bid is provably false
+        config = view.get("config")
+        if public.last_bid is not None and self.is_opponent_bid_provably_false(public.last_bid, my_dice, sum(public.dice_counts), config):
+            if not self.disable_auto_sync:
+                self._record_action(is_me=True, action_type="CallLiarAction")
+                self.last_bid_on_table = public.last_bid
+            return CallLiarAction()
+        
+        # Predict action (mask already prevents universally impossible bids)
         mask = self._get_action_mask(view)
         action_idx, _ = self.model.predict(obs, action_masks=mask, deterministic=not self.stochastic)
         game_action = self._decode_action(action_idx)
@@ -151,6 +168,8 @@ class PPOAgent(Agent):
         
         public = view["public"]
         curr = public.last_bid
+        config = view.get("config")
+        total_dice = sum(public.dice_counts)
         
         if curr is not None:
             mask[0] = True  # Call Liar always valid if bid exists
@@ -161,7 +180,9 @@ class PPOAgent(Agent):
                 if idx < n_actions:
                     cand = Bid(q, f)
                     if curr is None or cand.is_higher_than(curr):
-                        mask[idx] = True
+                        # Also check not universally impossible
+                        if not self.is_bid_universally_impossible(cand, total_dice, config):
+                            mask[idx] = True
         return mask
 
     def _decode_action(self, idx):

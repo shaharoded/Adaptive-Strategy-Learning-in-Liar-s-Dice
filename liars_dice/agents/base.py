@@ -35,19 +35,67 @@ class Agent(ABC):
         """
         return sum(1 for d in my_dice if d == face)
 
-    def call_liar_deterministic(self, my_dice, last_bid, estimated_total):
+    def is_bid_universally_impossible(self, bid, total_dice, config=None):
         """
-        Determine if the agent should call liar with certainty, given the last bid, own dice, and total dice in play.
-        Returns True if even with all possible opponent dice, the bid cannot be true.
+        Check if a bid is universally impossible (no one can make it).
+        A bid is universally impossible if its quantity exceeds total dice in play.
+        
+        This blocks our own bid suggestions (never suggest quantity > total_dice),
+        which can immediately be called as liar by the opponent.
+        
         Args:
-            my_dice (iterable): The agent's private dice.
-            last_bid (Bid): The last bid made.
-            estimated_total (int): Total dice in the game.
+            bid (Bid): The bid to check.
+            total_dice (int): Total dice in the game.
+            config (Config): Game config object (used to check ones_wild setting).
+            
         Returns:
-            bool: True if the agent should call liar deterministically.
+            bool: True if the bid is universally impossible.
+        
+        NOTE: This function takes config as an argument for future extensibility,
         """
-        if last_bid is None:
+        if bid is None:
             return False
-        opponent_max = max(0, estimated_total - len(my_dice))
-        my_count = self.my_count_of_face(my_dice, last_bid.face)
-        return my_count + opponent_max < last_bid.quantity
+        return bid.quantity > total_dice
+    
+    def is_opponent_bid_provably_false(self, opponent_bid, my_dice, total_dice, config=None):
+        """
+        Check if opponent's bid is mathematically impossible given our knowledge.
+        
+        This is used to automatically call liar when we can PROVE the opponent is lying
+        based on our dice and the total dice count. When ones_wild=True, ones count as
+        wildcards for any face, making more bids possible.
+        
+        Example: if we have all 6s and they bid (3, 1), we know they can have at most 
+        (total_dice - len(my_dice)) ones. With ones_wild=True, ones also count as 6s,
+        so their ability to make this bid depends on how many ones they could have.
+        
+        Note: This does NOT apply to our own bids - we CAN bluff about faces we don't have,
+        as long as the quantity is <= total_dice.
+
+        This function is harsher than is_bid_universally_impossible, 
+        which only checks if quantity > total_dice and designed to prevent us from making transparent bluffs.
+        
+        Args:
+            opponent_bid (Bid): The bid made by opponent.
+            my_dice (iterable): Our private dice.
+            total_dice (int): Total dice in the game.
+            config (Config): Game config object (used to check ones_wild setting).
+            
+        Returns:
+            bool: True if opponent's bid is provably false.
+        """
+        if opponent_bid is None:
+            return False
+        # If quantity > total, it's universally impossible
+        if opponent_bid.quantity > total_dice:
+            return True
+        # Check if we can mathematically prove they can't have this many of this face
+        opponent_max = max(0, total_dice - len(my_dice))
+        my_count = self.my_count_of_face(my_dice, opponent_bid.face)
+        
+        # If ones are wild and the bid is NOT for ones, ones also count as matches
+        ones_wild = getattr(config, 'ones_wild', False) if config else False
+        if ones_wild and opponent_bid.face != 1:
+            my_count += self.my_count_of_face(my_dice, 1)
+        
+        return my_count + opponent_max < opponent_bid.quantity

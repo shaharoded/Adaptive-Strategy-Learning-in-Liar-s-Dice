@@ -18,7 +18,7 @@ class NashCFRAgent(Agent):
     NashCFRAgent:
     Implements External Sampling Monte Carlo Counterfactual Regret Minimization (MCCFR).
     Uses static methods to train policies for various dice configurations.
-    During gameplay, selects actions based on precomputed CFR policies.
+    During gameplay, samples actions based on precomputed CFR policies in a stochastic manner.
     Args:
         policy_dict (dict): Pretrained policy dictionary mapping info sets to action probabilities.
                             Allowing to load different policies as long as the policiy is saved in-memory, 
@@ -82,20 +82,40 @@ class NashCFRAgent(Agent):
         if policy and info_set in policy:
             action_probs = policy[info_set]
             actions, probs = zip(*action_probs.items())
-            chosen = random.choices(actions, weights=probs, k=1)[0]
-            if chosen == "call_liar":
-                return CallLiarAction()
-            else:
-                q, f = chosen
-                return BidAction(Bid(q, f))
+            
+            # Keep sampling until we get a valid action
+            max_attempts = len(actions)
+            for _ in range(max_attempts):
+                chosen = random.choices(actions, weights=probs, k=1)[0]
+                if chosen == "call_liar":
+                    return CallLiarAction()
+                else:
+                    q, f = chosen
+                    candidate = Bid(q, f)
+                    # Check if bid is valid
+                    if not self.is_bid_universally_impossible(candidate, total_dice, config):
+                        return BidAction(candidate)
+            # If all attempts failed, fall through to fallback
         
         # Fallback: Random legal action (should rarely happen if policy is comprehensive)
         if last_bid is None:
-            return BidAction(Bid(1, random.choice(my_dice)))
+            # Try random opening bids until we find a valid one
+            for _ in range(len(faces)):
+                candidate = Bid(1, random.choice(faces))
+                if not self.is_bid_universally_impossible(candidate, total_dice, config):
+                    return BidAction(candidate)
+            return CallLiarAction()  # Safety fallback if all failed
+        # Check if opponent bid is provably false
+        if self.is_opponent_bid_provably_false(last_bid, my_dice, total_dice, config):
+            return CallLiarAction()
+        
         for q in range(last_bid.quantity, total_dice + 1):
             for f in faces:
                 candidate = Bid(q, f)
                 if candidate.is_higher_than(last_bid):
+                    # Safety guard: skip universally impossible bids
+                    if self.is_bid_universally_impossible(candidate, total_dice, config):
+                        continue
                     try:
                         candidate.validate(config)
                         return BidAction(candidate)

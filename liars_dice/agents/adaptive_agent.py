@@ -25,6 +25,8 @@ class AdaptiveAgent(Agent):
     Maintains belief distribution over opponent types and selects specialist
     PPO experts accordingly. Uses manual history synchronization to ensure
     experts have correct context.
+
+    NOTE: This agent does not require bid validation checks, as it's next action is always produced by a valid expert agent.
     """
     
     def __init__(
@@ -95,12 +97,6 @@ class AdaptiveAgent(Agent):
         self.round_index = -1
         self.last_public_state = None
         self.round_action_history = []  # Track actions in current round for expert sync
-        
-        print(f"AdaptiveAgent initialized (Neural LSTM):")
-        print(f"  Min observations: {self.min_observations}")
-        print(f"  Device: {self.device}")
-        print(f"  Available experts: {len(self.experts)}")
-        print(f"  Opponent types: {self.belief_tracker.opponent_types}")
     
     def _load_experts(self):
         """Load all specialist expert models."""
@@ -112,7 +108,6 @@ class AdaptiveAgent(Agent):
                 # Load with disable_auto_sync=True so we can manually manage history
                 expert = PPOAgent(model_path=str(expert_path), disable_auto_sync=True)
                 self.experts[opp_type] = expert
-                print(f"  [OK] Loaded expert for {opp_type}")
             except Exception as e:
                 print(f"  [WARNING] Could not load expert for {opp_type}: {e}")
                 # Continue without this expert - will use generalist as fallback

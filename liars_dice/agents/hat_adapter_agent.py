@@ -19,6 +19,12 @@ from typing import Dict, Any
 
 @register_agent("hat_adapter_agent")
 class HatAdapterAgent(Agent):
+    """
+    An adaptive agent that selects among a set of expert agents ("hats") based on learned performance in different game states.
+    It uses a memory of state-action performance to choose the most suitable expert for the current game situation.
+
+    NOTE: This agent does not require bid validation checks, as it's next action is always produced by a valid expert agent.
+    """
     def __init__(self, memory_file='memory_checkpoint_7000000_games.pkl'):
         super().__init__()
         self.memory = Memory(memory_file)
@@ -104,7 +110,7 @@ class HatAdapterAgent(Agent):
     def _get_state_representation(self, state_view):
         public_state = state_view['public']
         my_dice = state_view['my_dice']
-        my_player_id = state_view['player_id']
+        my_player_id = state_view.get('player_id', 0)
 
         last_bid = public_state.last_bid
         bid_repr = (last_bid.quantity, last_bid.face) if last_bid else (0, 0)

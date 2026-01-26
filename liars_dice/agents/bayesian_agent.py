@@ -171,10 +171,12 @@ class BayesianAgent(Agent):
             q = max(1, best_count)
             q = min(q, total)
             bid = Bid(q, int(best_face))
-            return BidAction(bid)
+            if not self.is_bid_universally_impossible(bid, total, config):
+                return BidAction(bid)
+            return CallLiarAction()
 
         # Deterministic impossibility guard-rail.
-        if self.call_liar_deterministic(my_dice, last_bid, total):
+        if self.is_opponent_bid_provably_false(last_bid, my_dice, total, config):
             return CallLiarAction()
 
         # Probabilistic call.
@@ -187,6 +189,8 @@ class BayesianAgent(Agent):
         best_fallback = None
 
         for candidate in self._iter_higher_bids(last_bid, config, total):
+            if self.is_bid_universally_impossible(candidate, total, config):
+                continue
             if best_fallback is None:
                 best_fallback = candidate  # minimal legal raise
 
