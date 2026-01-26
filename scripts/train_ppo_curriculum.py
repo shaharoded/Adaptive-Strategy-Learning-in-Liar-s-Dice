@@ -155,6 +155,8 @@ def get_league_opponents():
     
     Excludes:
     - rl_ppo (the agent being trained)
+    - hat_adapter_agent (the uses the PPO agent among others, cannot be included)
+    - adaptive (a meta method on top of the PPO agent)
     - Any agents that fail to instantiate (e.g., untrained agents)
     
     Returns list of (opponent_class, display_name) tuples.
@@ -162,8 +164,8 @@ def get_league_opponents():
     elite_opponents = []
     
     for agent_name, agent_cls in AGENT_MAP.items():
-        # Skip the PPO agent itself
-        if agent_name == "rl_ppo":
+        # Skip the PPO agent itself and adaptive agents that are based on PPO
+        if agent_name in ["rl_ppo", "adaptive", "hat_adapter_agent"]:
             continue
         
         # Try to instantiate to verify it's available
