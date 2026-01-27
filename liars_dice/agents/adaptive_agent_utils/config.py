@@ -70,7 +70,7 @@ CLASSIFIER_CONFIG = {
     "max_sequence_length": 50,      # Maximum trajectory length to consider
     "action_vocab_size": 100,       # Vocabulary size for action encoding
 
-    "min_observations": 5,          # Min opponent actions before making prediction
+    "min_observations": 2,          # Min opponent actions before making prediction
     "update_frequency": 1,          # How often to update beliefs (every N actions)
 }
 
