@@ -4,5 +4,6 @@ __pycache__/
 results/
 data/
 runs/
+overleaf/
 *policy_part*.pkl
 diagnosis_report.txt
