@@ -214,8 +214,7 @@ class LLMAdversaryAgent(Agent):
         user_prompt = self._build_user_prompt(view)
 
         api_params = {
-            "model":      self._model,
-            "max_tokens": 20,
+            "model":    self._model,
             "messages": [
                 {"role": "system", "content": self.SYSTEM_PROMPT},
                 {"role": "user",   "content": user_prompt},
